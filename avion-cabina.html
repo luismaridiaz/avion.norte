@@ -1,0 +1,2337 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Simulador — cabina + exterior (v2 · terreno real + mapa)</title>
+<script>
+// Cazador de errores visible en pantalla — para depurar sin acceso a consola/inspector.
+(function () {
+  var box = null;
+  function show(msg) {
+    if (!box) {
+      box = document.createElement('div');
+      box.id = '__errBox';
+      box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999999;background:#3a0d0d;color:#ffdede;font:11px/1.4 ui-monospace,Consolas,monospace;padding:8px;max-height:45vh;overflow:auto;white-space:pre-wrap;border-bottom:3px solid #ef5350';
+      document.documentElement.appendChild(box);
+    }
+    var line = document.createElement('div');
+    line.style.cssText = 'margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid #6b1d1d';
+    line.textContent = msg;
+    box.appendChild(line);
+  }
+  window.addEventListener('error', function (e) {
+    var msg = (e.error && e.error.stack) ? e.error.stack : (e.message + ' — ' + e.filename + ':' + e.lineno + ':' + e.colno);
+    show('ERROR: ' + msg);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    show('PROMESA RECHAZADA: ' + (r && r.stack ? r.stack : r));
+  });
+  window.__showErr = show;
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>if (typeof THREE === 'undefined') window.__showErr('Three.js NO cargó desde cdnjs.cloudflare.com (revisa conexión/bloqueo de red).');</script>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script>if (typeof maplibregl === 'undefined') window.__showErr('maplibre-gl NO cargó desde unpkg.com (revisa conexión/bloqueo de red). El resto de la app debería seguir funcionando.');</script>
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+<style>
+:root{--bg:#0a0e1a;--panel:#141c2b;--panel2:#1a2438;--ink:#e8edf5;--ink2:#7a8aa8;--accent:#4fc3f7;--warn:#ef5350;--ok:#66bb6a;--bd:#2a3a55;--mono:ui-monospace,Consolas,monospace}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,sans-serif;overflow:hidden;user-select:none;overscroll-behavior:none}
+body{height:100dvh;height:100svh;display:flex;flex-direction:column}
+.views{display:flex;gap:4px;margin-bottom:6px}
+body.view-cockpit .sim{grid-template-columns:1fr}
+body.view-cockpit .right{display:none}
+body.view-ext .sim{grid-template-columns:1fr}
+body.view-ext .cockpit{display:none}
+body.view-ext .right{display:flex;min-height:0}
+body.view-ext .ctl{max-height:28vh}
+.sim{display:grid;grid-template-columns:1.15fr .85fr;flex:1 1 auto;min-height:0}
+.mapStrip{flex:0 0 170px;flex-shrink:0;width:100%;border-top:2px solid var(--bd);position:relative;background:#0a0e1a}
+.mapStrip .mlAttrib{position:absolute;left:6px;top:4px;z-index:2;font:10px var(--mono);color:var(--ink2);background:rgba(8,12,20,.6);padding:1px 5px;border-radius:3px;pointer-events:none}
+.cockpit,.ext{position:relative;min-height:180px;background:#080c18;overflow:hidden}
+.cockpit{border-right:2px solid var(--bd)}
+canvas{display:block;width:100%;height:100%}
+.hud{position:absolute;inset:0;pointer-events:none;font-family:var(--mono)}
+.frame{position:absolute;inset:0;box-shadow:inset 0 12px 20px rgba(0,0,0,.18),inset 0 -36px 28px rgba(10,12,18,.35);border:4px solid #1a1520;border-bottom-width:28px;border-radius:4px}
+.tape{position:absolute;top:50%;transform:translateY(-50%);width:36px;height:150px;background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.1);border-radius:4px;overflow:hidden}
+.tape.l{left:14px}.tape.r{right:14px}
+.tape .fill{position:absolute;bottom:0;width:100%;background:linear-gradient(to top,#4fc3f7,#66bb6a,#ffb74d)}
+.tape .v{position:absolute;top:-16px;left:50%;transform:translateX(-50%);font-size:10px;font-weight:700}
+.tape .lb{position:absolute;bottom:-14px;width:100%;text-align:center;font-size:8px;color:var(--ink2)}
+.pack{position:absolute;bottom:10px;left:8px;right:8px;display:grid;grid-template-columns:repeat(6,1fr);gap:4px}
+.inst{background:rgba(0,0,0,.55);border:1px solid rgba(255,255,255,.08);border-radius:4px;padding:4px 3px;text-align:center}
+.inst i{display:block;font-size:8px;color:var(--ink2);font-style:normal}
+.inst b{font-size:13px;color:var(--accent)}
+.inst.att{position:relative;height:36px;overflow:hidden}
+.hud.dusk .pack .inst,.hud.night .pack .inst{box-shadow:inset 0 0 10px rgba(255,170,80,.18);border-color:rgba(255,176,80,.35)}
+.hud.night .six .g{border-color:#e0a050;box-shadow:0 0 8px rgba(255,160,60,.4)}
+.hud.night .frame{box-shadow:inset 0 8px 16px rgba(255,160,60,.08),inset 0 -28px 24px rgba(255,140,40,.12)}
+#attMark{position:absolute;left:8%;right:8%;top:50%;height:2px;background:#e8edf5}
+.warn{position:absolute;top:12px;left:50%;transform:translateX(-50%);font-weight:800;letter-spacing:2px;opacity:0}
+.warn.show{opacity:1;color:#ef5350}
+.ap{position:absolute;bottom:84px;right:12px;font-size:10px;color:#4fc3f7;opacity:0}
+.ap.show{opacity:1}
+.ladder{position:absolute;left:50%;top:42%;width:140px;height:160px;margin-left:-70px;margin-top:-80px;overflow:hidden;pointer-events:none}
+.ladder .g{position:absolute;inset:0;transform-origin:50% 50%}
+.ladder .hz{position:absolute;left:10%;right:10%;top:50%;height:2px;background:#c8e6ff;box-shadow:0 0 6px #4fc3f7}
+.ladder .bar{position:absolute;left:50%;height:1px;background:rgba(200,230,255,.75);transform:translateX(-50%)}
+.ladder .bar.w{width:56px}
+.ladder .bar.n{width:28px}
+.ladder .ac{position:absolute;left:50%;top:50%;width:36px;height:2px;margin-left:-18px;margin-top:-1px;background:#f0b429;z-index:2}
+.ladder .ac:before,.ladder .ac:after{content:"";position:absolute;top:-5px;width:8px;height:8px;border:2px solid #f0b429;border-radius:50%}
+.ladder .ac:before{left:-10px}.ladder .ac:after{right:-10px}
+.ladder .num{position:absolute;font:700 10px var(--mono);color:#e8f4ff;opacity:.95;text-shadow:0 1px 2px #000}
+.rollarc{position:absolute;left:50%;top:16%;width:120px;height:60px;margin-left:-60px;pointer-events:none;z-index:6}
+.rollarc svg{width:120px;height:60px;overflow:visible}
+.rollptr{transform-origin:60px 12px}
+.six{position:absolute;left:58px;right:130px;bottom:92px;display:flex;flex-wrap:nowrap;gap:3px;z-index:7;pointer-events:none;justify-content:flex-start}
+.six .g{width:26px;height:26px;flex:0 0 26px;border-radius:50%;background:#0d121c;border:1px solid #4a5a70;position:relative;overflow:hidden}
+.six .g b{position:absolute;left:50%;bottom:2px;transform:translateX(-50%);font:700 7px var(--mono);color:#7a8aa8}
+.six .g i{position:absolute;left:50%;top:50%;width:2px;height:14px;margin:-12px 0 0 -1px;background:#ffb74d;transform-origin:50% 90%;border-radius:1px}
+.badge{display:none}
+.keys{color:var(--ink2);font-size:11px;margin:6px 0 4px;line-height:1.45}
+.keys b{color:var(--accent)}
+.right{display:flex;flex-direction:column;background:var(--panel);min-height:0}
+.ext{flex:1;min-height:0}
+.ctl{background:var(--panel2);border-top:1px solid var(--bd);padding:8px 10px;max-height:46vh;overflow:auto}
+.row{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px}
+button{flex:1;min-width:64px;padding:8px 8px;border:1px solid var(--bd);border-radius:5px;background:#0a0e1a;color:var(--ink2);font:700 11px var(--mono);cursor:pointer;text-transform:uppercase}
+button.on,button.active{background:rgba(79,195,247,.18);color:var(--accent);border-color:#4fc3f7}
+button.pri.on{background:#4fc3f7;color:#0a0e1a;border-color:#4fc3f7}
+.sls{display:grid;grid-template-columns:1fr 1fr;gap:4px 10px}
+.sls label{display:grid;grid-template-columns:58px 1fr 36px;gap:4px;align-items:center;font-size:10px;color:var(--ink2);text-transform:uppercase}
+input[type=range]{width:100%;height:4px;-webkit-appearance:none;background:var(--bd)}
+.tel{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-top:6px;font:11px var(--mono)}
+.tel b{display:block;color:var(--accent)}
+.tel span{color:var(--ink2);font-size:9px;text-transform:uppercase}
+.touch{display:none;position:absolute;inset:0;pointer-events:none;z-index:12}
+.thr-pad,.stick-pad{position:absolute;z-index:12;touch-action:none;pointer-events:auto}
+.thr-pad{left:10px;bottom:72px;width:52px;height:160px;background:rgba(10,14,26,.75);border:2px solid #4fc3f7;border-radius:26px}
+.thr-knob{position:absolute;left:6px;width:32px;height:32px;border-radius:50%;background:#4fc3f7;bottom:40%}
+.stick-pad{right:10px;bottom:88px;width:120px;height:120px;border-radius:50%;background:rgba(0,0,0,.4);border:1px solid #4fc3f7}
+.stick-knob{position:absolute;width:44px;height:44px;border-radius:50%;background:#e8edf5;left:38px;top:38px}
+@media(max-width:900px){
+  .sim{grid-template-columns:1fr;grid-template-rows:minmax(38dvh,1fr) auto}
+  .cockpit{border-right:0;border-bottom:2px solid var(--bd);min-height:34dvh}
+  .frame{border-width:0;border-bottom-width:20px;box-shadow:inset 0 -50px 40px rgba(10,12,18,.4)}
+  .tape,.keys{display:none}
+  .pack{grid-template-columns:repeat(3,1fr);bottom:6px}
+  .badge{display:none}
+  .ctl{max-height:38dvh;padding:8px 8px calc(10px + env(safe-area-inset-bottom))}
+  .touch{display:block}
+  .sls{display:none}
+  button{min-height:42px;font-size:12px}
+  .thr-pad{bottom:calc(64px + env(safe-area-inset-bottom))}
+  .stick-pad{bottom:calc(64px + env(safe-area-inset-bottom))}
+  .mapStrip{flex-basis:calc(130px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)}
+}
+</style>
+</head>
+<body>
+<div class="sim">
+  <div class="cockpit" id="cockpitWrap">
+    <canvas id="cockpitCanvas"></canvas>
+    <div class="hud">
+      <div class="frame"></div>
+      <div class="rollarc" id="rollArc">
+        <svg viewBox="0 0 120 60">
+          <path d="M10 54 A50 50 0 0 1 110 54" fill="none" stroke="#4fc3f7" stroke-opacity=".45" stroke-width="1.2"/>
+          <g fill="#4fc3f7" fill-opacity=".7">
+            <rect x="58.5" y="4" width="3" height="8"/>
+            <rect x="28" y="12" width="2" height="6" transform="rotate(-30 29 15)"/>
+            <rect x="90" y="12" width="2" height="6" transform="rotate(30 91 15)"/>
+          </g>
+          <polygon id="rollPtr" class="rollptr" points="60,6 54,16 66,16" fill="#f0b429"/>
+        </svg>
+      </div>
+      <div class="ladder" id="pitchLadder">
+        <div class="g" id="pitchGroup">
+          <div class="hz"></div>
+          <div class="bar w" style="top:12%"></div><span class="num" style="top:9%;left:8px">20</span><span class="num" style="top:9%;right:8px">20</span>
+          <div class="bar n" style="top:22%"></div><span class="num" style="top:19%;left:18px;opacity:.7">15</span>
+          <div class="bar w" style="top:32%"></div><span class="num" style="top:29%;left:8px">10</span><span class="num" style="top:29%;right:8px">10</span>
+          <div class="bar n" style="top:42%"></div><span class="num" style="top:39%;left:18px;opacity:.7">5</span>
+          <div class="bar n" style="top:58%"></div><span class="num" style="top:55%;left:18px;opacity:.7">5</span>
+          <div class="bar w" style="top:68%"></div><span class="num" style="top:65%;left:8px">10</span><span class="num" style="top:65%;right:8px">10</span>
+          <div class="bar n" style="top:78%"></div><span class="num" style="top:75%;left:18px;opacity:.7">15</span>
+          <div class="bar w" style="top:88%"></div><span class="num" style="top:85%;left:8px">20</span><span class="num" style="top:85%;right:8px">20</span>
+        </div>
+        <div class="ac"></div>
+      </div>
+      <div class="six" id="sixPack">
+        <div class="g"><i id="nIAS"></i><b>IAS</b></div>
+        <div class="g"><i id="nALT"></i><b>ALT</b></div>
+        <div class="g"><i id="nVSI"></i><b>VSI</b></div>
+        <div class="g"><i id="nATT"></i><b>ATT</b></div>
+        <div class="g"><i id="nHDG"></i><b>HDG</b></div>
+        <div class="g"><i id="nTC"></i><b>TC</b></div>
+      </div>
+      <div class="tape l"><div class="fill" id="speedFill"></div><div class="v" id="speedValue">0</div><div class="lb">IAS</div></div>
+      <div class="tape r"><div class="fill" id="altFill"></div><div class="v" id="altValue">0</div><div class="lb">ALT</div></div>
+      <div class="pack">
+        <div class="inst"><i>IAS</i><b id="hudIas">0</b></div>
+        <div class="inst"><i>ALT</i><b id="hudAlt">0</b></div>
+        <div class="inst"><i>V/S</i><b id="hudVs">0</b></div>
+        <div class="inst"><i>α</i><b id="hudAlpha">0</b></div>
+        <div class="inst"><i>G</i><b id="hudG">1</b></div>
+        <div class="inst att" id="attBox"><i>ATT</i><span id="attMark"></span></div>
+      </div>
+      <div class="warn" id="warningDisplay"></div>
+      <div class="ap" id="apStatus">AP</div>
+      <!-- badge movido al panel -->
+    </div>
+    <div class="touch">
+      <div class="thr-pad" id="thrPad"><div class="thr-knob" id="thrKnob"></div></div>
+      <div class="stick-pad" id="stkPad"><div class="stick-knob" id="stkKnob"></div></div>
+    </div>
+  </div>
+  <div class="right">
+    <div class="ext" id="extWrap"><canvas id="exteriorCanvas"></canvas></div>
+    <div class="ctl">
+      <p id="typeBadge2" style="color:#fff;font:700 14px ui-monospace,Consolas,monospace;margin:0 0 8px">C172 · A</p>
+      <div class="views">
+        <button id="vwSplit" class="on">Split</button>
+        <button id="vwCock">Cabina</button>
+        <button id="vwExt">Exterior</button>
+      </div>
+      <div class="row">
+        <button id="scGround">Tierra</button>
+        <button id="scApproach" class="on">Aprox</button>
+        <button id="scCruise">Crucero</button>
+        <button id="scFlare">Flare</button>
+      </div>
+      <div class="row">
+        <button id="terrGeneric" class="on">Terreno genérico</button>
+        <button id="terrLEAS">Asturias</button>
+        <button id="terrLELN">León</button>
+        <button id="terrLEXJ">Santander</button>
+        <button id="terrLEBB">Bilbao</button>
+        <button id="terrLEST">Santiago</button>
+      </div>
+      <p id="terrStatus" style="color:var(--ink2);font-size:11px;margin:0 0 8px">Relieve procedural (sin conexión a datos reales).</p>
+      <div class="row">
+        <button id="tp-c172" class="on">C172</button>
+        <button id="tp-pa28">ARROW</button>
+        <button id="tp-extra">L-39</button>
+        <button id="fidA" class="on">Nivel A</button>
+        <button id="fidB">Nivel B</button>
+        <button id="fidC">Vista C</button>
+        <button id="fidD">Nivel D*</button>
+        <button id="btnQtg">QTG*</button>
+        <button id="btnMot">Motion</button>
+        <button id="btnSnd">Sonido</button>
+        <button id="litDay" class="on">Día</button>
+        <button id="litDusk">Ocaso</button>
+        <button id="litNight">Noche</button>
+      </div>
+      <div class="row">
+        <button id="modeManual" class="on">Manual</button>
+        <button id="modeAuto" class="pri">Autoland</button>
+        <button id="btnGear">Tren ↓</button>
+        <button id="btnReset">Reset</button>
+      </div>
+      <div class="sls">
+        <label>Gas <input id="slThrottle" type="range" min="0" max="1" step="0.005" value="0.32"><span id="valThrottle">32%</span></label>
+        <label>Elev. <input id="slElevator" type="range" min="-1" max="1" step="0.005" value="0"><span id="valElevator">0</span></label>
+        <label>Alerón <input id="slAileron" type="range" min="-1" max="1" step="0.005" value="0"><span id="valAileron">0</span></label>
+        <label>Timón <input id="slRudder" type="range" min="-1" max="1" step="0.005" value="0"><span id="valRudder">0</span></label>
+        <label>Flaps <input id="slFlap" type="range" min="0" max="1" step="0.005" value="0.5"><span id="valFlap">50%</span></label>
+        <label>Freno <input id="slBrake" type="range" min="0" max="1" step="0.005" value="0"><span id="valBrake">0%</span></label>
+      </div>
+      <div class="row" id="windRow">
+        <label style="flex:1;font:11px var(--mono);color:#fff">Viento cruz.
+          <input id="slWindVe" type="range" min="-15" max="15" step="0.5" value="5.5">
+          <span id="valWindVe">11 kt</span>
+        </label>
+        <label style="flex:1;font:11px var(--mono);color:#fff">Frontal
+          <input id="slWindVn" type="range" min="-12" max="12" step="0.5" value="0">
+          <span id="valWindVn">0 kt</span>
+        </label>
+      </div>
+      <canvas id="traceCv" width="640" height="96" style="width:100%;height:72px;background:#070b12;border:1px solid #2a3344;border-radius:4px;margin:4px 0 8px"></canvas>
+      <div class="row">
+        <button id="padInvY">Inv. pitch</button>
+        <button id="padInvT">Inv. gas</button>
+      </div>
+      <p id="padInfo" style="color:var(--ink2);font-size:11px;margin:4px 0 8px">Mando: no detectado. Empareja un gamepad y pulsa un botón.</p>
+      <p class="keys"><b>Web:</b> W/S gas · ↑↓ pitch · ←→ alabeo · A/D timón · F/V flaps · B freno · G tren · T autoland · R reset</p>
+      <p class="keys"><b>A</b> polar genérica. <b>B</b> efecto suelo + racha. <b>Vista C</b> FOV 92° + Panini + sacudida visual (no es colimado óptico).</p>
+      <div class="tel">
+        <div><b id="telIas">—</b><span>IAS</span></div>
+        <div><b id="telAlt">—</b><span>ALT</span></div>
+        <div><b id="telVs">—</b><span>VS</span></div>
+        <div><b id="telAlpha">—</b><span>α</span></div>
+        <div><b id="telPitch">—</b><span>θ</span></div>
+        <div><b id="telRoll">—</b><span>φ</span></div>
+        <div><b id="telCLCD">—</b><span>CL/CD</span></div>
+        <div><b id="telAP">off</b><span>AP</span></div>
+        <div><b id="telGust">—</b><span>Racha w</span></div>
+        <div><b id="telStab">—</b><span>Estab.</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="mapStrip">
+  <span class="mlAttrib">Mapa: OpenFreeMap · Relieve: IGN España</span>
+  <div id="maplibreMap" style="width:100%;height:100%"></div>
+</div>
+<script>
+/**
+ * AviationEngine — 6DOF quasi-estacionario para monomotor ligero.
+ * Coeficientes: orden de magnitud (Cessna 172 / PA-28), NO polar de túnel.
+ * Determinista: sin Math.random().
+ */
+'use strict';
+
+/**
+ * TerrainSystem — relieve 3D procedural compartido por física y render.
+ * Ruido fractal (value noise) determinista, sin dependencias ni tiles externos.
+ * Aplana el relieve a 0 dentro de SAFE_R (radio en metros desde el umbral de
+ * pista, 0,0) para no alterar en ABSOLUTO el comportamiento de vuelo/aterrizaje
+ * existente: la aproximación y el entrenamiento ocurren siempre dentro de esa
+ * zona plana. Más allá, el relieve aparece de forma gradual (rampa hasta FADE_R).
+ */
+const TerrainSystem = (() => {
+  let seed = 20260907;
+  function makeNoise(sd) {
+    let x = sd >>> 0 || 1;
+    const rnd = () => { x ^= x << 13; x ^= x >>> 17; x ^= x << 5; return ((x >>> 0) % 65536) / 65536; };
+    const p = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) p[i] = i;
+    for (let i = 255; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const t = p[i]; p[i] = p[j]; p[j] = t; }
+    const perm = new Uint8Array(512);
+    for (let i = 0; i < 512; i++) perm[i] = p[i & 255];
+    const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+    const lerp = (a, b, t) => a + t * (b - a);
+    const grad = (h, gx0, gy0) => { const g = h & 7; const gx = (g < 4) ? 1 : -1, gy = (g % 4 < 2) ? 1 : -1; return gx * gx0 + gy * gy0; };
+    function noise2(nx, ny) {
+      const X = Math.floor(nx) & 255, Y = Math.floor(ny) & 255;
+      const xf = nx - Math.floor(nx), yf = ny - Math.floor(ny);
+      const u = fade(xf), v = fade(yf);
+      const aa = perm[perm[X] + Y], ab = perm[perm[X] + Y + 1];
+      const ba = perm[perm[X + 1] + Y], bb = perm[perm[X + 1] + Y + 1];
+      const x1 = lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u);
+      const x2 = lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u);
+      return (lerp(x1, x2, v) + 1) / 2;
+    }
+    function fbm(nx, ny, oct, lac, gain) {
+      let amp = 0.5, freq = 1, sum = 0, norm = 0;
+      for (let o = 0; o < oct; o++) { sum += amp * noise2(nx * freq, ny * freq); norm += amp; freq *= lac; amp *= gain; }
+      return sum / norm;
+    }
+    return { fbm };
+  }
+  let noise = makeNoise(seed);
+  const TILE = 3000;
+  const HEIGHT_SCALE = 220;
+  const HEIGHT_OFFSET = 0.32; // fracción de HEIGHT_SCALE restada (mismo criterio que el POC)
+  const SAFE_R = 1100;  // radio (m) desde el umbral de pista: SIEMPRE plano (cubre todo el envelope de vuelo/aterrizaje actual)
+  const FADE_R = 1900;  // relieve procedural completo alcanzado aquí (coincide con el borde de niebla procedural)
+  const FADE_R_REAL = 4000; // con datos reales, el relieve completo se alcanza en pocos km (antes 20km dejaba todo lo cercano aplanado y sin detalle)
+  function rawHeight(x, z) {
+    const nx = x / TILE, nz = z / TILE;
+    const base = noise.fbm(nx * 1.6 + 10, nz * 1.6 + 10, 5, 2.05, 0.5);
+    const ridge = Math.abs(noise.fbm(nx * 0.6 + 50, nz * 0.6 + 50, 4, 2.1, 0.55) * 2 - 1);
+    const h = Math.pow(base, 1.3) * 0.6 + (1 - ridge) * 0.5;
+    return h * HEIGHT_SCALE - HEIGHT_SCALE * HEIGHT_OFFSET;
+  }
+  function smoothstep(e0, e1, v) { const t = Math.max(0, Math.min(1, (v - e0) / (e1 - e0))); return t * t * (3 - 2 * t); }
+  function heightToColorT(h) { return Math.max(0, Math.min(1, (h + HEIGHT_SCALE * HEIGHT_OFFSET) / HEIGHT_SCALE)); }
+  function groundElevation(x, z) {
+    const d = Math.hypot(x, z);
+    const real = (typeof RealTerrain !== 'undefined') ? RealTerrain.sample(x, z) : null;
+    const fadeR = (real !== null) ? FADE_R_REAL : FADE_R;
+    const k = smoothstep(SAFE_R, fadeR, d);
+    if (k <= 0) return 0;
+    const h = (real !== null) ? real : rawHeight(x, z);
+    return h * k;
+  }
+  return { groundElevation, heightToColorT, TILE, HEIGHT_SCALE, HEIGHT_OFFSET, SAFE_R, FADE_R, FADE_R_REAL, get seed() { return seed; } };
+})();
+if (typeof window !== 'undefined') window.TerrainSystem = TerrainSystem;
+
+/**
+ * RealTerrain — carga bajo demanda relieve REAL (DEM real, ~90m/píxel),
+ * imagen satelital y carreteras principales de un aeródromo concreto,
+ * generados offline por fetch_terrain.py / fetch_terrain_v2.py y desplegados
+ * como archivos estáticos junto al HTML (terrain/<ICAO>.*). No es un backend:
+ * son ficheros estáticos, sin servidor propio.
+ *
+ * Codificación de altura: RGBA de 8 bits, R*256+G = entero 0..65535 mapeado
+ * linealmente a [height_min_m, height_max_m] (ver JSON). Deliberadamente NO se
+ * usa PNG de 16 bits de un canal: los navegadores (Safari iOS incluido)
+ * reducen esos canales a 8 bits al leer con getImageData, corrompiendo la
+ * altura silenciosamente. RGBA de 8 bits siempre se decodifica sin pérdida.
+ *
+ * Simplificación asumida: se usa el rumbo de la pista/ILS PREFERENTE de cada
+ * aeródromo (fuente: AIP España / documentación operativa), no el que esté
+ * realmente en uso en un momento dado (eso depende del viento real). Es una
+ * aproximación razonable para un entrenador, no un dato de navegación válido.
+ */
+const RealTerrain = (() => {
+  const BASE = 'terrain/';
+  const cache = {};
+  const satCache = {};
+  const roadsCache = {};
+  const placesCache = {};
+  let active = null;
+  let loadToken = 0;
+
+  // Rumbo magnético aproximado de la pista/dirección de aproximación preferente,
+  // usado para rotar el relieve real de modo que el eje de aproximación de la
+  // simulación (+x) coincida con la orientación real (p.ej. que el mar quede al
+  // lado correcto). LEXJ es una estimación (mismo par de pista 11/29 que LEAS,
+  // mismo patrón de viento dominante de la costa cantábrica).
+  const APPROACH_HEADING_DEG = {
+    LEAS: 289, // RWY29, ILS, pista preferente
+    LELN: 227, // RWY23, curso ILS 227°M
+    LEXJ: 290, // RWY29 (extremo junto a la bahía) — estimado
+    LEBB: 298, // RWY30, ILS
+    LEST: 170  // RWY17, pista preferente
+  };
+
+  function decodeToHeights(img, meta) {
+    const size = meta.png_size;
+    const cnv = document.createElement('canvas');
+    cnv.width = size; cnv.height = size;
+    const ctx = cnv.getContext('2d');
+    ctx.drawImage(img, 0, 0, size, size);
+    const data = ctx.getImageData(0, 0, size, size).data;
+    const heights = new Float32Array(size * size);
+    const span = meta.height_max_m - meta.height_min_m;
+    for (let i = 0, p = 0; i < heights.length; i++, p += 4) {
+      const v16 = data[p] * 256 + data[p + 1];
+      heights[i] = meta.height_min_m + (v16 / 65535) * span;
+    }
+    return heights;
+  }
+
+  function load(icao) {
+    const myToken = ++loadToken;
+    if (cache[icao] && cache[icao].loaded) { active = icao; return Promise.resolve(cache[icao]); }
+    return fetch(BASE + icao + '.json').then(r => {
+      if (!r.ok) throw new Error('meta ' + r.status);
+      return r.json();
+    }).then(meta => new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const heights = decodeToHeights(img, meta);
+          const entry = { heights, size: meta.png_size, mpp: meta.meters_per_pixel, fieldElev: meta.field_elev_m, headingRad: (APPROACH_HEADING_DEG[icao] || 0) * Math.PI / 180, meta, loaded: true };
+          cache[icao] = entry;
+          if (myToken === loadToken) active = icao; // evita condición de carrera si se cambia de sitio a mitad de carga
+          resolve(entry);
+        } catch (e) { reject(e); }
+      };
+      img.onerror = () => reject(new Error('no se pudo cargar ' + BASE + icao + '_rg.png'));
+      img.src = BASE + icao + '_rg.png';
+    }));
+  }
+
+  function clear() { loadToken++; active = null; }
+
+  // Coordenada de píxel compartida por altura, color-de-mar, imagen satelital
+  // y carreteras — así los cuatro quedan perfectamente alineados entre sí,
+  // porque todos usan exactamente el mismo giro/escala.
+  function _colRow(e, x, z) {
+    const hd = e.headingRad || 0;
+    const north = x * Math.cos(hd) - z * Math.sin(hd);
+    const east = x * Math.sin(hd) + z * Math.cos(hd);
+    const half = e.size / 2;
+    const col = Math.max(0, Math.min(e.size - 1.001, half + east / e.mpp));
+    const row = Math.max(0, Math.min(e.size - 1.001, half - north / e.mpp));
+    return { col, row };
+  }
+
+  function _lookup(x, z) {
+    const e = cache[active];
+    const { col, row } = _colRow(e, x, z);
+    const x0 = Math.floor(col), y0 = Math.floor(row);
+    const x1 = x0 + 1, y1 = y0 + 1, fx = col - x0, fy = row - y0;
+    const HM = e.heights, S = e.size;
+    const h00 = HM[y0 * S + x0], h10 = HM[y0 * S + x1], h01 = HM[y1 * S + x0], h11 = HM[y1 * S + x1];
+    const top = h00 + (h10 - h00) * fx, bot = h01 + (h11 - h01) * fx;
+    return top + (bot - top) * fy; // altura absoluta real (m), sin recortar
+  }
+
+  function sample(x, z) {
+    if (!active || !cache[active] || !cache[active].loaded) return null;
+    const e = cache[active];
+    let hAbs = _lookup(x, z);
+    if (hAbs < 0.5) hAbs = 0; // nivel del mar: aplana la batimetría bajo el agua
+    return hAbs - e.fieldElev; // relativo a la elevación real del campo (0 = altitud de pista, como hasta ahora)
+  }
+
+  // Para pintar el mar de azul en vez del color de tierra más bajo: distingue
+  // "es agua" (altura real absoluta ~0) de "es tierra baja" sin recortar el
+  // dato, algo que sample() ya no puede decir tras restar la elevación del campo.
+  function isSea(x, z) {
+    if (!active || !cache[active] || !cache[active].loaded) return false;
+    return _lookup(x, z) < 0.5;
+  }
+
+  // UV normalizada (0..1) para pintar la imagen satelital sobre el terreno.
+  // Válida para CUALQUIER imagen que cubra el mismo rectángulo real que el
+  // heightmap (mismo centro/radio) — no depende de la resolución en píxeles
+  // de esa imagen, solo de la geografía que abarca.
+  function uv(x, z) {
+    if (!active || !cache[active]) return null;
+    const e = cache[active];
+    const { col, row } = _colRow(e, x, z);
+    return { u: col / e.size, v: 1 - row / e.size };
+  }
+
+  function loadSatellite(icao) {
+    if (satCache[icao]) return Promise.resolve(satCache[icao]);
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const tex = new THREE.Texture(img);
+        tex.needsUpdate = true;
+        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        satCache[icao] = tex;
+        resolve(tex);
+      };
+      img.onerror = () => reject(new Error('no se pudo cargar ' + BASE + icao + '_sat.jpg'));
+      img.src = BASE + icao + '_sat.jpg';
+    });
+  }
+  function hasSatellite(icao) { return !!satCache[icao]; }
+  function getSatTexture(icao) { return satCache[icao] || null; }
+
+  function loadRoads(icao) {
+    if (roadsCache[icao]) return Promise.resolve(roadsCache[icao]);
+    return fetch(BASE + icao + '_roads.json').then(r => {
+      if (!r.ok) throw new Error('roads ' + r.status);
+      return r.json();
+    }).then(data => { roadsCache[icao] = data.roads || []; return roadsCache[icao]; });
+  }
+  function getRoads(icao) { return roadsCache[icao] || null; }
+
+  function loadPlaces(icao) {
+    if (placesCache[icao]) return Promise.resolve(placesCache[icao]);
+    return fetch(BASE + icao + '_places.json').then(r => {
+      if (!r.ok) throw new Error('places ' + r.status);
+      return r.json();
+    }).then(data => { placesCache[icao] = data.places || []; return placesCache[icao]; });
+  }
+  function getPlaces(icao) { return placesCache[icao] || null; }
+
+  // Convierte lat/lon real (de una carretera) a coordenadas locales del
+  // simulador — es la transformación INVERSA de _colRow/sample (que van de
+  // sim a real), usando el mismo rumbo de pista para mantener todo alineado.
+  function realToSim(icao, lat, lon) {
+    const e = cache[icao];
+    if (!e) return { x: 0, z: 0 };
+    const fLat = e.meta.field_lat, fLon = e.meta.field_lon;
+    const north = (lat - fLat) * 111320;
+    const east = (lon - fLon) * 111320 * Math.cos(fLat * Math.PI / 180);
+    const hd = e.headingRad || 0;
+    const x = north * Math.cos(hd) + east * Math.sin(hd);
+    const z = -north * Math.sin(hd) + east * Math.cos(hd);
+    return { x, z };
+  }
+
+  // Inversa de realToSim: posición del simulador -> lat/lon real. Misma
+  // rotación que _colRow (sim->real), reutilizada tal cual — usada para
+  // colocar el avión en el visor MapLibre.
+  function simToReal(icao, x, z) {
+    const e = cache[icao];
+    if (!e) return null;
+    const hd = e.headingRad || 0;
+    const north = x * Math.cos(hd) - z * Math.sin(hd);
+    const east = x * Math.sin(hd) + z * Math.cos(hd);
+    const fLat = e.meta.field_lat, fLon = e.meta.field_lon;
+    const lat = fLat + north / 111320;
+    const lon = fLon + east / (111320 * Math.cos(fLat * Math.PI / 180));
+    return { lat, lon };
+  }
+
+  return {
+    load, clear, sample, isSea, uv,
+    loadSatellite, hasSatellite, getSatTexture,
+    loadRoads, getRoads, loadPlaces, getPlaces, realToSim, simToReal,
+    get active() { return active; }
+  };
+})();
+if (typeof window !== 'undefined') window.RealTerrain = RealTerrain;
+
+const AviationEngine = (() => {
+  const DEG = Math.PI / 180;
+  const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+  const sat = (x) => clamp(x, -1, 1);
+  const wrapPi = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+  /** ISA troposfera (hasta 11 km). Fuente: ISO 2533 / ICAO Doc 7488. */
+  function isa(alt) {
+    const h = clamp(alt, -200, 11000);
+    const T0 = 288.15, p0 = 101325, L = 0.0065, R = 287.05287, g = 9.80665;
+    const T = T0 - L * h;
+    const p = p0 * Math.pow(T / T0, g / (R * L));
+    const rho = p / (R * T);
+    const a = Math.sqrt(1.4 * R * T);
+    return { T, p, rho, a };
+  }
+
+  class AerodynamicModel {
+    constructor(p = {}) {
+      this.S = p.S ?? 16.2;
+      this.b = p.b ?? 11.0;
+      this.cBar = p.cBar ?? 1.493;
+      this.CL0 = p.CL0 ?? 0.31;
+      this.CLalpha = p.CLalpha ?? 4.8;
+      this.CLde = p.CLde ?? 0.36;
+      this.CLdf = p.CLdf ?? 0.52;
+      this.alphaStall = p.alphaStall ?? 16 * DEG;
+      this.CD0 = p.CD0 ?? 0.031;
+      this.kInduced = p.kInduced ?? 0.055;
+      this.CDdf = p.CDdf ?? 0.07;
+      this.CDgear = p.CDgear ?? 0.014;
+      this.Cm0 = p.Cm0 ?? 0.04;
+      this.CmalphaAC = p.CmalphaAC ?? -0.48;
+      this.xAC = p.xAC ?? 0.25;
+      this.xCG = p.xCG ?? 0.295;
+      this.Cmq = p.Cmq ?? -11.5;
+      this.Cmde = p.Cmde ?? -1.05;
+      this.Cmdf = p.Cmdf ?? -0.12;
+      this.Cybeta = p.Cybeta ?? -0.31;
+      this.Cydr = p.Cydr ?? 0.18;
+      this.Clbeta = p.Clbeta ?? -0.092;
+      this.Clp = p.Clp ?? -0.47;
+      this.Clr = p.Clr ?? 0.10;
+      this.Clda = p.Clda ?? 0.17;
+      this.Cnbeta = p.Cnbeta ?? 0.058;
+      this.Cnr = p.Cnr ?? -0.11;
+      this.Cnda = p.Cnda ?? -0.012;
+      this.Cndr = p.Cndr ?? -0.10;
+      this.geEnabled = p.geEnabled ?? true;
+      this.clTabA = [-8, -6, -4, -2, 0, 2, 4, 6, 8, 10, 12, 14, 15, 16, 18, 20, 22];
+      this.clTab = [-0.18, -0.05, 0.08, 0.21, 0.31, 0.47, 0.63, 0.79, 0.95, 1.10, 1.18, 1.14, 1.06, 0.95, 0.78, 0.60, 0.42];
+      this.cdTab = [0.048, 0.040, 0.035, 0.032, 0.030, 0.030, 0.032, 0.036, 0.044, 0.056, 0.076, 0.110, 0.140, 0.180, 0.240, 0.300, 0.360];
+    }
+    _lerpCL(alphaDeg) {
+      const a = this.clTabA, v = this.clTab;
+      if (alphaDeg <= a[0]) return v[0];
+      if (alphaDeg >= a[a.length - 1]) return v[v.length - 1];
+      for (let i = 0; i < a.length - 1; i++) {
+        if (alphaDeg <= a[i + 1]) {
+          const t = (alphaDeg - a[i]) / (a[i + 1] - a[i]);
+          return v[i] + t * (v[i + 1] - v[i]);
+        }
+      }
+      return v[v.length - 1];
+    }
+    _lerpTab(tab, alphaDeg) {
+      const a = this.clTabA, v = tab;
+      if (alphaDeg <= a[0]) return v[0];
+      if (alphaDeg >= a[a.length - 1]) return v[v.length - 1];
+      for (let i = 0; i < a.length - 1; i++) {
+        if (alphaDeg <= a[i + 1]) {
+          const t = (alphaDeg - a[i]) / (a[i + 1] - a[i]);
+          return v[i] + t * (v[i + 1] - v[i]);
+        }
+      }
+      return v[v.length - 1];
+    }
+
+    coeffs(alpha, beta, p, q, r, V, de, da, dr, df, gearDown, hAGL) {
+      const aDeg = alpha * 180 / Math.PI;
+      let CL = this._lerpCL(aDeg) + this.CLde * de + this.CLdf * df;
+
+      const ReFac = clamp(V / 35, 0.55, 1);
+      let k = this.kInduced / Math.max(0.7, ReFac);
+      if (this.geEnabled && hAGL < 3 * this.cBar) {
+        const hc = Math.max(0.15, hAGL / this.cBar);
+        k *= 1 - 0.55 * Math.exp(-hc / 1.4);
+      }
+      const CDtab = this._lerpTab(this.cdTab, aDeg);
+      let CD = Math.max(CDtab, this.CD0 / ReFac + k * CL * CL) + this.CDdf * df * df + 0.025 * de * de + 0.012 * da * da + 0.04 * beta * beta;
+      if (gearDown) CD += this.CDgear;
+      // Suelo post-pérdida: no dejar que CD siga a CL↓.
+      // Ancla en CD(CLmax) de la polar parabólica + incremento heurístico.
+      const CLmax = Math.max(...this.clTab);
+      const CDpeak = this.CD0 + k * CLmax * CLmax;
+      const stallFactor = Math.max(0, Math.abs(alpha) / Math.max(this.alphaStall, 1e-6) - 0.85);
+      if (stallFactor > 0) {
+        const CDstall = CDpeak + 0.12 * stallFactor * stallFactor + 0.06 * stallFactor;
+        CD = Math.max(CD, CDstall);
+      }
+      CD = Math.max(CD, 0.018);
+
+      const c2V = this.cBar / Math.max(2 * V, 4);
+      const b2V = this.b / Math.max(2 * V, 4);
+      const CLq = 3.8;
+      CL += CLq * q * c2V;
+      const CmAC = this.Cm0 + this.CmalphaAC * alpha + this.Cmq * q * c2V + this.Cmde * de + this.Cmdf * df;
+      const Cm = CmAC + CL * (this.xCG - this.xAC);
+      const CY = this.Cybeta * beta + this.Cydr * dr;
+      const Cl = this.Clbeta * beta + this.Clp * p * b2V + this.Clr * r * b2V + this.Clda * da;
+      const Cn = this.Cnbeta * beta + this.Cnr * r * b2V + this.Cnda * da + this.Cndr * dr;
+      return { CL, CD, Cm, CY, Cl, Cn };
+    }
+  }
+
+  class PropulsionSystem {
+    constructor(p = {}) {
+      this.isJet = !!p.jet;
+      this.Pmax = (p.Pmax_kW ?? 160) * 1000;
+      this.Tstatic = p.Tstatic ?? 3800;
+      this.eta = p.eta ?? 0.78;
+      this.spool = p.spool ?? (this.isJet ? 2.2 : 0.45); // reactor: mucho más lento en responder al gas (inercia del compresor)
+      this.sfc = p.sfc ?? 2.4e-7;
+      this.tsfc = p.tsfc ?? 1.4e-5; // kg de combustible por N de empuje y segundo (solo reactor)
+      this.idleFrac = p.idleFrac ?? 0.62; // %N1 al ralentí (solo reactor)
+      this.fuel = p.fuel ?? 80;
+      this.fuelCap = p.fuelCap ?? 80;
+      this.thr = 0;
+      this.rpm = this.isJet ? this.idleFrac * 2700 : 700;
+    }
+    step(cmd, V, rho, dt) {
+      cmd = clamp(cmd, 0, 1);
+      const rate = 1 / this.spool;
+      this.thr += (cmd - this.thr) * Math.min(1, rate * dt);
+      const dens = clamp(rho / 1.225, 0.35, 1.05);
+      if (this.isJet) {
+        // Reactor de verdad: el empuje NO cae con 1/V como una hélice — se
+        // mantiene prácticamente constante con la velocidad (subsónico), solo
+        // depende del régimen (%N1) y de la densidad del aire a esa altitud.
+        const n1 = this.idleFrac + (1 - this.idleFrac) * this.thr; // %N1: ralentí..100%
+        const n1Target = n1 * 2700; // reutiliza la escala del dial de RPM existente
+        this.rpm += (n1Target - this.rpm) * Math.min(1, 1.1 * dt);
+        const idleThrustFrac = 0.04; // un reactor real nunca da empuje cero al ralentí (por eso puede rodar sin frenos)
+        const T = this.Tstatic * Math.pow(dens, 0.7) * (idleThrustFrac + (1 - idleThrustFrac) * Math.pow(Math.max(0, this.thr), 1.2));
+        const ff = this.tsfc * T; // consumo específico de empuje (TSFC), no de potencia
+        this.fuel = Math.max(0, this.fuel - ff * dt);
+        if (this.fuel <= 0) return { thrust: 0, rpm: this.rpm, fuel: 0, thr: this.thr, power: 0, map: this.thr };
+        return { thrust: T, rpm: this.rpm, fuel: this.fuel, thr: this.thr, power: T * Math.max(V, 0), map: this.thr };
+      }
+      const rpmT = 650 + 2050 * this.thr;
+      this.rpm += (rpmT - this.rpm) * Math.min(1, 2.2 * dt);
+      const n = clamp(this.rpm / 2700, 0.22, 1.02);
+      const P = this.Pmax * dens * Math.pow(n, 1.15) * this.thr;
+      const Tdyn = (P * this.eta) / Math.max(V, 16);
+      const T = Math.min(this.Tstatic * this.thr * dens, Tdyn);
+      const ff = this.sfc * P;
+      this.fuel = Math.max(0, this.fuel - ff * dt);
+      if (this.fuel <= 0) return { thrust: 0, rpm: this.rpm, fuel: 0, thr: this.thr, power: 0, map: this.thr };
+      return { thrust: T, rpm: this.rpm, fuel: this.fuel, thr: this.thr, power: P, map: this.thr };
+    }
+  }
+
+  class Aircraft {
+    constructor(params = {}) {
+      this.mass = params.mass ?? 1043;
+      this.g = 9.80665;
+      this.Ixx = params.Ixx ?? 1280;
+      this.Iyy = params.Iyy ?? 1820;
+      this.Izz = params.Izz ?? 2660;
+      this.S = params.S ?? 16.2;
+      this.b = params.b ?? 11.0;
+      this.cBar = params.cBar ?? 1.493;
+      this.gearH = params.gearH ?? 1.12;
+      this.aero = new AerodynamicModel(params.aero || {});
+      this.prop = new PropulsionSystem(params.prop || {});
+      this.controls = { throttle: 0, elevator: 0, aileron: 0, rudder: 0, flap: 0, brake: 0, gearDown: true };
+      this.ap = { on: false, mode: 'off', Vref: 33, hdot: -1.55, flared: false, landed: false, iv: 0 };
+      this.nav = { rwyX: 0, rwyZ: 0, rwyPsi: 0, rwyLen: 1400, gsAngle: 3 * DEG };
+      this.wind = { vn: 0, ve: 5.5, vd: 0 }; // ~11 kt cruzado de estribor
+      this.turbulence = params.turbulence ?? 0.35;
+      this.crashed = false;
+      this.typeId = params.typeId || 'c172';
+      this.typeName = params.typeName || 'C172-like';
+      this.fidelity = params.fidelity || 'A';
+      this.nz = 1;
+      this.buffet = 0;
+      this.contactPts = [];
+      this._ge = 0; // elevación local del terreno (m), 0 = plano existente hasta hoy
+      this.reset('approach');
+    }
+
+    /** Racha Dryden discreta determinista (suma de senos, sin Math.random). */
+    _gust(dt) {
+      const t = this.time;
+      const a = this.turbulence;
+      if (a <= 0) return { u: 0, v: 0, w: 0 };
+      const u = a * (0.55 * Math.sin(0.37 * t) + 0.28 * Math.sin(1.13 * t + 1.7) + 0.12 * Math.sin(2.71 * t + 0.4));
+      const v = a * (0.40 * Math.sin(0.51 * t + 2.1) + 0.22 * Math.sin(1.67 * t + 0.8));
+      const w = a * (0.85 * Math.sin(0.73 * t + 0.6) + 0.55 * Math.sin(2.09 * t + 2.4) + 0.28 * Math.sin(3.31 * t + 1.1));
+      return { u, v, w };
+    }
+
+    _gearForces(vel) {
+      const pts = [
+        { name: 'L', xb: -0.55, yb: this.gearH, zb: -1.15, main: true },
+        { name: 'R', xb: -0.55, yb: this.gearH, zb: 1.15, main: true },
+        { name: 'N', xb: 1.35, yb: this.gearH * 0.92, zb: 0, main: false }
+      ];
+      const K = 52000, C = 4800;
+      let Fx = 0, FyUp = 0, Fz = 0, Mx = 0, My = 0, Mz = 0, Nsum = 0;
+      const out = [];
+      this.onGround = false;
+      const ge = this._ge || 0; // elevación local del terreno bajo el avión
+      const agl = this.y - ge;  // altura real sobre el suelo local (no sobre y=0)
+      if (!this.controls.gearDown) { this.contactPts = []; this.contactN = 0; return { Fx, FyUp, Fz, Mx, My, Mz }; }
+      for (const g of pts) {
+        const sink = this.gearH - agl + g.zb * Math.sin(this.phi) - g.xb * Math.sin(this.theta);
+        const comp = Math.max(0, sink);
+        if (comp <= 0 && agl > this.gearH + 0.25) { out.push({ ...g, N: 0, comp: 0 }); continue; }
+        let N = K * Math.min(comp, 0.18) - C * Math.min(0, vel.vy);
+        N = clamp(N, 0, this.mass * this.g * 0.7);
+        if (N > 2) this.onGround = true;
+        const muR = 0.025 + (g.main ? 0.40 * this.controls.brake : 0);
+        const fLong = -muR * N * sat(vel.vx);
+        const fLat = -0.35 * N * sat(vel.vz + this.r * g.xb);
+        Fx += fLong; FyUp += N; Fz += fLat; Nsum += N;
+        Mx += N * g.zb - fLat * g.yb;
+        My += fLong * 0 - N * g.xb * 0.15;
+        Mz += fLat * g.xb - fLong * g.zb;
+        out.push({ ...g, N, comp });
+      }
+      this.contactPts = out;
+      this.contactN = Nsum;
+      if (this.onGround && agl < this.gearH) this.y = ge + this.gearH - Math.min(0.12, Math.max(0, this.gearH - agl));
+      return { Fx, FyUp, Fz, Mx, My, Mz };
+    }
+
+    airspeed() { return Math.hypot(this.u, this.v, this.w); }
+    indicatedAirspeed() {
+      const atm = this.last ? this.last.atm : isa(this.y);
+      return this.airspeed() * Math.sqrt(atm.rho / 1.225);
+    }
+    get gForce() { return this.nz || 1; }
+    get gearDown() { return this.controls.gearDown; }
+    set gearDown(v) { this.controls.gearDown = !!v; }
+    alpha() { return Math.atan2(this.w, Math.max(0.4, this.u)); }
+    beta() { return Math.asin(clamp(this.v / Math.max(0.5, this.airspeed()), -1, 1)); }
+
+    _worldVel() {
+      const cph = Math.cos(this.phi), sph = Math.sin(this.phi);
+      const cth = Math.cos(this.theta), sth = Math.sin(this.theta);
+      const cps = Math.cos(this.psi), sps = Math.sin(this.psi);
+      const vn = cth * cps * this.u + (sph * sth * cps - cph * sps) * this.v + (cph * sth * cps + sph * sps) * this.w;
+      const ve = cth * sps * this.u + (sph * sth * sps + cph * cps) * this.v + (cph * sth * sps - sph * cps) * this.w;
+      const vd = -sth * this.u + sph * cth * this.v + cph * cth * this.w;
+      return { vx: vn, vy: -vd, vz: ve };
+    }
+
+    _eulerRates() {
+      const tth = Math.tan(clamp(this.theta, -75 * DEG, 75 * DEG));
+      const sph = Math.sin(this.phi), cph = Math.cos(this.phi);
+      const cth = Math.max(0.2, Math.cos(this.theta));
+      return {
+        phiDot: this.p + tth * (this.q * sph + this.r * cph),
+        thetaDot: this.q * cph - this.r * sph,
+        psiDot: (this.q * sph + this.r * cph) / cth
+      };
+    }
+
+    _ils() {
+      const dx = this.nav.rwyX - this.x;
+      const dz = this.nav.rwyZ - this.z;
+      const cps = Math.cos(this.nav.rwyPsi), sps = Math.sin(this.nav.rwyPsi);
+      const along = dx * cps + dz * sps;
+      const across = -dx * sps + dz * cps;
+      const dme = Math.hypot(dx, dz, Math.max(0, this.y));
+      const loc = Math.atan2(across, Math.max(30, -along));
+      const gsIdeal = Math.tan(this.nav.gsAngle) * Math.max(40, -along);
+      const gsDev = Math.atan2(this.y - gsIdeal, Math.max(40, -along));
+      return { along, across, dme, loc, gsDev, gsIdeal };
+    }
+
+    _autopilot(dt) {
+      if (!this.ap.on) return;
+      const V = this.airspeed();
+      const wv = this._worldVel();
+      const ils = this._ils();
+      const eV = this.ap.Vref - V;
+      this.ap.iv = clamp(this.ap.iv + eV * dt, -10, 10);
+      let thr = clamp(0.30 + 0.045 * eV + 0.012 * this.ap.iv, 0.06, 0.82);
+      let hdotRef = this.ap.hdot;
+      const agl = this.y - (this._ge || 0); // altura sobre el terreno local (== this.y dentro del envelope actual, terreno plano)
+      if (agl < 9) {
+        this.ap.flared = true;
+        const k = clamp((9 - agl) / 9, 0, 1);
+        hdotRef = this.ap.hdot * (1 - k) - 0.4 * k;
+        thr *= (1 - 0.55 * k);
+      }
+      if (this.onGround || agl <= this.gearH + 0.08) {
+        this.ap.landed = true;
+        this.ap.mode = 'rollout';
+        thr = 0;
+        this.controls.brake = clamp(0.25 + 0.02 * V, 0, 1);
+      } else {
+        this.ap.mode = this.ap.flared ? 'flare' : 'approach';
+        this.controls.brake = 0;
+      }
+      const eH = hdotRef - wv.vy;
+      this.controls.elevator = clamp(-0.22 * eH - 0.55 * (this.theta - 2.5 * DEG) - 0.35 * this.q, -0.85, 0.85);
+      if (this.ap.flared && !this.ap.landed) this.controls.elevator = clamp(this.controls.elevator - 0.08, -0.9, 0.3);
+      const wrap = wrapPi(this.nav.rwyPsi - this.psi);
+      const track = wrap + clamp(ils.across / 80, -0.35, 0.35);
+      const phiCmd = clamp(0.55 * track, -18 * DEG, 18 * DEG);
+      this.controls.aileron = clamp(1.4 * (phiCmd - this.phi) - 0.45 * this.p, -0.45, 0.45);
+      this.controls.rudder = clamp(0.35 * wrap - 0.12 * this.v - 0.25 * this.r, -0.4, 0.4);
+      this.controls.throttle = thr;
+      this.controls.flap = agl < 90 ? 0.65 : (agl < 160 ? 0.35 : this.controls.flap);
+      this.controls.gearDown = agl < 140 || this.onGround;
+    }
+
+    step(dt) {
+      dt = dt || 1 / 60;
+      const n = Math.max(1, Math.ceil(dt / 0.004));
+      const s = dt / n;
+      let out = null;
+      for (let i = 0; i < n; i++) out = this._step(s);
+      return out;
+    }
+
+    _step(dt) {
+      this.time += dt;
+      this._ge = TerrainSystem.groundElevation(this.x, this.z);
+      this._autopilot(dt);
+      const c = this.controls;
+      const de = clamp(c.elevator, -1, 1) * 18 * DEG;
+      const da = clamp(c.aileron, -1, 1) * 20 * DEG;
+      const dr = clamp(c.rudder, -1, 1) * 22 * DEG;
+      const df = clamp(c.flap, 0, 1);
+      const atm = isa(this.y);
+      const gust = this._gust(dt);
+      const V = Math.max(this.airspeed(), 0.08);
+      const cpsW = Math.cos(this.psi), spsW = Math.sin(this.psi);
+      const windU = this.wind.vn * cpsW + this.wind.ve * spsW;
+      const windV = -this.wind.vn * spsW + this.wind.ve * cpsW;
+      const al = this.alpha() + gust.w * 0.035;
+      const be = this.beta() + gust.v * 0.02 + windV * 0.018;
+      const coef = this.aero.coeffs(al, be, this.p, this.q, this.r, V, de, da, dr, df, !!c.gearDown, this.y);
+      const qbar = 0.5 * atm.rho * V * V;
+      const L = qbar * this.S * coef.CL;
+      const D = qbar * this.S * coef.CD;
+      const Y = qbar * this.S * coef.CY;
+      const lM = qbar * this.S * this.b * coef.Cl;
+      const mM = qbar * this.S * this.cBar * coef.Cm;
+      const nM = qbar * this.S * this.b * coef.Cn;
+      const ca = Math.cos(al), sa = Math.sin(al);
+      const cb = Math.cos(be), sb = Math.sin(be);
+      const Fax = -D * ca * cb - Y * ca * sb + L * sa;
+      const Fay = -D * sb + Y * cb;
+      const Faz = -D * sa * cb - Y * sa * sb - L * ca;
+      const pr = this.prop.step(c.throttle, V, atm.rho, dt);
+      const FxB = Fax + pr.thrust;
+      const FyB = Fay;
+      const FzB = Faz;
+
+      const weight = this.mass * this.g;
+      const velPre = this._worldVel();
+      const gear = this._gearForces(velPre);
+      let MxG = gear.Mx + gust.v * 520, MyG = gear.My + gust.w * 480, MzG = gear.Mz + gust.v * 220;
+
+      const gxb = -this.g * Math.sin(this.theta);
+      const gyb = this.g * Math.sin(this.phi) * Math.cos(this.theta);
+      const gzb = this.g * Math.cos(this.phi) * Math.cos(this.theta);
+
+      let axb = (FxB + gear.Fx) / this.mass + gxb + (this.r * this.v - this.q * this.w) + gust.u * 0.22;
+      let ayb = FyB / this.mass + gyb + (this.p * this.w - this.r * this.u) + gust.v * 0.28 + windV * 0.12;
+      let azb = (FzB - gear.FyUp * 0.15) / this.mass + gzb + (this.q * this.u - this.p * this.v) + gust.w * 0.55;
+
+      if (this.onGround) {
+        axb -= (0.012 * weight / this.mass) * sat(this.u);
+        this.v *= Math.max(0, 1 - 4 * dt);
+        this.w *= Math.max(0, 1 - 6 * dt);
+        MxG += -14000 * this.phi - 2000 * this.p;
+        MyG += -9000 * (this.theta - 2 * DEG) - 1600 * this.q;
+        MzG += dr * 700 - 380 * this.r + windV * 180;
+        azb = -0.85 * this.w;
+      }
+
+      this.u += axb * dt;
+      this.v += ayb * dt;
+      this.w += azb * dt;
+
+      const p = this.p, q = this.q, r = this.r;
+      const pDot = (lM + MxG - (this.Izz - this.Iyy) * q * r) / this.Ixx;
+      const qDot = (mM + MyG - (this.Ixx - this.Izz) * p * r) / this.Iyy;
+      const rDot = (nM + MzG - (this.Iyy - this.Ixx) * p * q) / this.Izz;
+      this.p = clamp(this.p + pDot * dt, -3, 3);
+      this.q = clamp(this.q + qDot * dt, -2.4, 2.4);
+      this.r = clamp(this.r + rDot * dt, -2.4, 2.4);
+
+      const er = this._eulerRates();
+      this.phi = clamp(this.phi + er.phiDot * dt, -80 * DEG, 80 * DEG);
+      this.theta = clamp(this.theta + er.thetaDot * dt, -40 * DEG, 40 * DEG);
+      this.psi = wrapPi(this.psi + er.psiDot * dt);
+
+      const vel = this._worldVel();
+      this.x += vel.vx * dt;
+      this.y += vel.vy * dt;
+      this.z += vel.vz * dt;
+      const ge = this._ge || 0;
+      if (this.onGround) {
+        this.y = ge + this.gearH;
+        if (this.u < 22) { this.phi *= Math.max(0, 1 - 3 * dt); this.p *= Math.max(0, 1 - 3 * dt); }
+      }
+      if (this.y < ge + 0.2) this.y = ge + 0.2;
+      const agl2 = this.y - ge;
+      const impact = -vel.vy;
+      const hard = agl2 < this.gearH + 1.2 && impact > (!this.controls.gearDown ? 3.5 : 8.5);
+      const bankHit = agl2 < 4 && Math.abs(this.phi) > 55 * DEG;
+      if ((hard || bankHit) && !this.crashed) this.crashed = true;
+      if (this.crashed) {
+        this.controls.throttle = 0;
+        this.u *= Math.max(0, 1 - 2.2 * dt);
+        this.v *= Math.max(0, 1 - 2.2 * dt);
+        this.w *= Math.max(0, 1 - 2.2 * dt);
+        this.p *= Math.max(0, 1 - 1.5 * dt);
+        this.q *= Math.max(0, 1 - 1.5 * dt);
+        this.r *= Math.max(0, 1 - 1.5 * dt);
+        if (agl2 < this.gearH) this.y = ge + Math.max(0.35, this.gearH * 0.45);
+      }
+
+      this.nz = clamp(L / Math.max(200, weight), -1, 3.5);
+      const aBf = Math.abs(al) * 180 / Math.PI;
+      let bf = 0;
+      if (aBf > 10) bf = clamp((aBf - 10) / 6, 0, 1);
+      if (aBf > 16) bf = clamp(1 - (aBf - 16) / 10, 0.45, 1);
+      if (this.onGround && this.controls.gearDown && V > 10) bf = Math.max(bf, 0.1 + 0.2 * Math.min(1, (V - 10) / 30));
+      this.buffet = bf;
+      this.last = { L, D, Y, coef, qbar, pr, vel, atm, alpha: al, beta: be, V, gust, nz: this.nz, buffet: this.buffet };
+      return this.telemetry();
+    }
+
+    telemetry() {
+      const V = this.airspeed();
+      const vel = this.last ? this.last.vel : this._worldVel();
+      const atm = this.last ? this.last.atm : isa(this.y);
+      const ias = V * Math.sqrt(atm.rho / 1.225);
+      const ils = this._ils();
+      const ge = this._ge || 0;
+      const stall = this.alpha() > 14 * DEG;
+      const gearWarn = !this.controls.gearDown && (this.y - ge) < 80 && vel.vy < 0;
+      const terrain = (this.y - ge) < 25 && vel.vy < -4 && !this.onGround;
+      // Base única de avisos: warn/warnings se derivan de aquí para que no puedan divergir
+      // (antes eran dos objetos literales separados, con incluso nombres de clave distintos).
+      const warnBase = { stall, gearWarn, terrain, crash: this.crashed, lowFuel: this.prop.fuel < 8, overspeed: V > 72 };
+      const aero = this.last ? { CL: this.last.coef.CL, CD: this.last.coef.CD, L: this.last.L, D: this.last.D, buffet: this.buffet } : { CL: 0, CD: 0, L: 0, D: 0, buffet: 0 };
+      const prop = this.last ? this.last.pr : { thrust: 0, rpm: 0, fuel: this.prop.fuel, thr: 0 };
+      return {
+        state: {
+          x: this.x, y: this.y, z: this.z, phi: this.phi, theta: this.theta, psi: this.psi,
+          u: this.u, v: this.v, w: this.w, p: this.p, q: this.q, r: this.r,
+          position: { x: this.x, y: this.y, z: this.z },
+          attitude: { phi: this.phi, theta: this.theta, psi: this.psi },
+          climbRate: vel.vy,
+          gForce: this.nz || 1
+        },
+        flight: {
+          V, ias, airspeed: V, indicatedAirspeed: ias, altitude: this.y,
+          agl: this.y - ge, groundElevation: ge,
+          tasKmh: V * 3.6, iasKmh: ias * 3.6, hdot: vel.vy,
+          alphaDeg: this.alpha() / DEG, betaDeg: this.beta() / DEG,
+          angleOfAttack: this.alpha() / DEG,
+          onGround: this.onGround, gearDown: this.controls.gearDown, flap: this.controls.flap,
+          throttle: this.controls.throttle, nz: this.nz, buffet: this.buffet
+        },
+        aero,
+        aerodynamic: { ...aero, lift: aero.L, drag: aero.D },
+        prop,
+        propulsion: prop,
+        ap: { on: this.ap.on, mode: this.ap.mode, flared: this.ap.flared, landed: this.ap.landed, Vref: this.ap.Vref },
+        ils, navigation: this.nav,
+        warn: warnBase,
+        warnings: { ...warnBase, gearWarning: warnBase.gearWarn },
+        gust: this.last && this.last.gust ? this.last.gust : { u: 0, v: 0, w: 0 },
+        stab: this.stability()
+      };
+    }
+
+    stability() {
+      const V = Math.max(8, this.airspeed());
+      const atm = this.last && this.last.atm ? this.last.atm : { rho: 1.225 };
+      const qbar = 0.5 * atm.rho * V * V;
+      const sm = this.aero.xAC - this.aero.xCG;
+      const CmAlpha = this.aero.CmalphaAC + this.aero.CLalpha * (this.aero.xCG - this.aero.xAC);
+      const Tph = (Math.PI * Math.SQRT2 * V) / this.g;
+      const wnSP = Math.sqrt(Math.max(1e-4, -CmAlpha * qbar * this.S * this.cBar / this.Iyy));
+      const Tsp = (2 * Math.PI) / Math.max(0.35, wnSP);
+      const Mq = this.aero.Cmq * qbar * this.S * this.cBar * this.cBar / (2 * V * this.Iyy);
+      const zetaSP = clamp((-Mq) / (2 * Math.max(0.35, wnSP)), 0.05, 0.95);
+      const wnDR = Math.sqrt(Math.max(1e-4, this.aero.Cnbeta * qbar * this.S * this.b / this.Izz));
+      const Tdr = (2 * Math.PI) / Math.max(0.4, wnDR);
+      const Nr = this.aero.Cnr * qbar * this.S * this.b * this.b / (2 * V * this.Izz);
+      const zetaDR = clamp((-Nr) / (2 * Math.max(0.4, wnDR)), 0.04, 0.8);
+      const CL = this.last && this.last.coef ? this.last.coef.CL : 0.6;
+      const CD = this.last && this.last.coef ? this.last.coef.CD : 0.04;
+      const zetaPh = clamp(CD / Math.max(0.15, CL * Math.SQRT2), 0.02, 0.25);
+      return {
+        staticMarginPct: sm * 100,
+        CmAlpha,
+        Cmq: this.aero.Cmq,
+        longStable: CmAlpha < 0,
+        phugoidSec: Tph,
+        phugoidZeta: zetaPh,
+        shortPeriodSec: Tsp,
+        shortPeriodZeta: zetaSP,
+        dutchRollSec: Tdr,
+        dutchRollZeta: zetaDR,
+        Cnbeta: this.aero.Cnbeta,
+        Cnr: this.aero.Cnr,
+        label: 'DR ' + Tdr.toFixed(1) + 's ζ' + zetaDR.toFixed(2) + ' · Ph ' + Tph.toFixed(0) + 's · SP ζ' + zetaSP.toFixed(2)
+      };
+    }
+
+    enableAutoland() {
+      this.ap.on = true; this.ap.mode = 'approach'; this.ap.flared = false; this.ap.landed = false; this.ap.iv = 0;
+    }
+    enableAutopilot() { this.enableAutoland(); }
+    updateAutopilot(dt) { this._autopilot(dt); }
+    disableAutopilot() { this.ap.on = false; this.ap.mode = 'off'; }
+
+    reset(kind) {
+      this.phi = 0; this.p = 0; this.q = 0; this.r = 0; this.v = 0; this.time = 0;
+      this._ge = 0;
+      this.ap.on = false; this.ap.mode = 'off'; this.ap.flared = false; this.ap.landed = false;
+      this.prop.fuel = this.prop.fuelCap; this.prop.thr = 0;
+      if (kind === 'cruise') {
+        this.x = 0; this.y = 320; this.z = 0; this.theta = 2 * DEG; this.psi = 0;
+        this.u = 54; this.w = 1.4; this.controls = { throttle: 0.55, elevator: 0, aileron: 0, rudder: 0, flap: 0, brake: 0, gearDown: false };
+        this.onGround = false;
+      } else if (kind === 'flare') {
+        this.x = -220; this.y = 18; this.z = 0; this.theta = 3 * DEG; this.psi = 0;
+        this.u = 32; this.w = 1.6; this.controls = { throttle: 0.22, elevator: 0.1, aileron: 0, rudder: 0, flap: 0.7, brake: 0, gearDown: true };
+        this.onGround = false;
+      } else if (kind === 'ground') {
+        this.x = -200; this.y = this.gearH; this.z = 0; this.theta = 2 * DEG; this.psi = 0;
+        this.u = 0; this.w = 0; this.controls = { throttle: 0, elevator: 0, aileron: 0, rudder: 0, flap: 0, brake: 0, gearDown: true };
+        this.onGround = true;
+      } else {
+        this.x = -900; this.y = 48; this.z = 0; this.theta = 2 * DEG; this.psi = 0;
+        this.u = 36; this.w = 1.2; this.controls = { throttle: 0.34, elevator: 0.05, aileron: 0, rudder: 0, flap: 0.55, brake: 0, gearDown: true };
+        this.onGround = false;
+      }
+      this.last = null;
+      this.crashed = false;
+      return this.telemetry();
+    }
+  }
+
+  const PRESETS = {
+    c172: { typeId: 'c172', typeName: 'C172-like', mass: 1043, S: 16.2, b: 11.0, cBar: 1.493, Ixx: 1280, Iyy: 1820, Izz: 2660, gearH: 1.12, prop: { Tstatic: 3800, Pmax_kW: 119 } },
+    pa28: { typeId: 'pa28', typeName: 'PA-28R Arrow-like', mass: 1315, S: 15.4, b: 9.14, cBar: 1.57, Ixx: 1400, Iyy: 1950, Izz: 2900, gearH: 1.05, prop: { Tstatic: 4300, Pmax_kW: 149 } },
+    extra: { typeId: 'extra', typeName: 'L-39 Albatros-like', mass: 3800, S: 18.8, b: 9.46, cBar: 1.90, Ixx: 4200, Iyy: 8600, Izz: 11200, gearH: 1.35, prop: { jet: true, Tstatic: 16800, tsfc: 1.4e-5, idleFrac: 0.62, fuel: 350, fuelCap: 350 } }
+  };
+
+  function create(p) {
+    if (typeof p === 'string') p = PRESETS[p] || PRESETS.c172;
+    return new Aircraft(p || PRESETS.c172);
+  }
+
+  Aircraft.prototype.setFidelity = function (lvl) {
+    this.fidelity = (lvl === 'B' || lvl === 'C' || lvl === 'D') ? lvl : 'A';
+    this.aero.geEnabled = this.fidelity !== 'A';
+    this.turbulence = this.fidelity === 'A' ? 0.12 : (this.fidelity === 'D' ? 0.55 : 0.48);
+    this.aero.useUiucCd = this.fidelity === 'C' || this.fidelity === 'D';
+    return this.fidelity;
+  };
+
+  return { create, Aircraft, PRESETS, isa, DEG, VERSION: '5.2.0' };
+})();
+
+if (typeof window !== 'undefined') window.AviationEngine = AviationEngine;
+if (typeof module !== 'undefined' && module.exports) module.exports = AviationEngine;
+
+</script>
+<script>
+(() => {
+  let mlMap = null, mlMarker = null, mlReady = false, mlLastUpdate = 0, mlMarkerShown = false; // declarado aquí arriba: resize() lo usa más abajo antes de que la sección MapLibre (mucho más adelante en el archivo) llegara a declararlo — eso reventaba TODO el script al arrancar
+  const st = document.getElementById('apStatus');
+  if (typeof THREE === 'undefined') { st.textContent = 'Sin Three.js (CDN)'; st.classList.add('show'); return; }
+  if (typeof AviationEngine === 'undefined') { st.textContent = 'Sin motor'; st.classList.add('show'); return; }
+
+  let ac = AviationEngine.create('c172');
+  ac.setFidelity('A');
+  ac.reset('approach');
+  let currentScene = 'approach';
+  let fidelity = 'A';
+  let typeId = 'c172';
+
+  function world() {
+    const s = new THREE.Scene();
+    s.background = new THREE.Color(0x6ea8d4);
+    s.fog = new THREE.Fog(0x6ea8d4, 60, 1800);
+    _fogRefs.push(s.fog);
+    s.add(new THREE.AmbientLight(0xc8d8ee, 0.55));
+    const sun = new THREE.DirectionalLight(0xfff1d0, 1.05);
+    sun.position.set(-80, 180, 60);
+    s.add(sun);
+    s.add(new THREE.HemisphereLight(0x9ec8ef, 0x3a5a32, 0.5));
+    const mobile = window.innerWidth < 900;
+    function canvasTex(w, h, paint) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      paint(c.getContext('2d'), w, h);
+      const t = new THREE.CanvasTexture(c);
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.magFilter = THREE.LinearFilter;
+      t.minFilter = THREE.LinearMipMapLinearFilter;
+      t.anisotropy = mobile ? 2 : 8;
+      t.generateMipmaps = true;
+      return t;
+    }
+    const grass = canvasTex(mobile ? 128 : 256, mobile ? 128 : 256, (ctx, w, h) => {
+      ctx.fillStyle = '#3a6a36'; ctx.fillRect(0, 0, w, h);
+      for (let i = 0; i < 80; i++) {
+        ctx.fillStyle = i % 2 ? '#2f5a30' : '#458045';
+        ctx.fillRect((i * 17) % w, (i * 29) % h, 3, 3);
+      }
+    });
+    grass.repeat.set(40, 40);
+    const rwyTex = canvasTex(128, 1024, (ctx, w, h) => {
+      ctx.fillStyle = '#3a3a46'; ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#f0e4b0';
+      ctx.fillRect(4, 0, 3, h);
+      ctx.fillRect(w - 7, 0, 3, h);
+      for (let y = 8; y < h; y += 32) ctx.fillRect(w / 2 - 2, y, 4, 16);
+    });
+    rwyTex.repeat.set(1, 18);
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(mobile ? 2000 : 4000, mobile ? 2000 : 4000),
+      new THREE.MeshLambertMaterial({ map: grass })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    s.add(ground);
+    const rw = new THREE.Mesh(
+      new THREE.PlaneGeometry(30, 1800),
+      new THREE.MeshLambertMaterial({ map: rwyTex })
+    );
+    rw.rotation.x = -Math.PI / 2;
+    rw.position.y = 0.04;
+    s.add(rw);
+    // Relieve procedural en el fondo (TerrainSystem). Es puramente aditivo:
+    // dentro del radio seguro (SAFE_R) el terreno es plano y queda oculto bajo
+    // el "ground" texturizado de arriba; más allá aparecen colinas/montañas.
+    // No modifica nada de lo que ya existía en la pista ni en el entorno cercano.
+    s.add(new THREE.Mesh(getTerrainGeometry(mobile), new THREE.MeshLambertMaterial({ vertexColors: true })));
+    _terrainMeshRefs.push(s.children[s.children.length - 1]);
+    const roadGroup = new THREE.Group();
+    s.add(roadGroup);
+    _roadGroupRefs.push(roadGroup);
+    const placeGroup = new THREE.Group();
+    s.add(placeGroup);
+    _placeGroupRefs.push(placeGroup);
+    return s;
+  }
+
+  let _terrainGeoCache = null;
+  let _terrainMeshRefs = [];
+  const _fogRefs = [];
+  const FOG_FAR_PROCEDURAL = 1800;
+  const FOG_FAR_REAL = 32000; // niebla mucho más lejana para que se vean costa/picos reales
+  function getTerrainGeometry(mobile, forceRebuild) {
+    if (_terrainGeoCache && !forceRebuild) return _terrainGeoCache;
+    if (_terrainGeoCache) _terrainGeoCache.dispose();
+    const usingRealSize = (typeof RealTerrain !== 'undefined') && !!RealTerrain.active;
+    const side = usingRealSize ? 60000 : (mobile ? 3600 : 4800);
+    const segs = usingRealSize ? (mobile ? 110 : 160) : (mobile ? 80 : 120);
+    const geo = new THREE.PlaneGeometry(side, side, segs, segs);
+    const pos = geo.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    const sandC = new THREE.Color('#c9b183'), grassC = new THREE.Color('#3a6a36'),
+          rockC = new THREE.Color('#7a6f63'), snowC = new THREE.Color('#eef3f7'),
+          seaC = new THREE.Color('#2f6690');
+    // Escala de color: la procedural está calibrada a ~220m de rango; el
+    // relieve real (Picos de Europa, etc.) supera 1500-2000m sobre el campo,
+    // así que necesita su propia escala o todo saldría blanco ("nieve").
+    const usingReal = (typeof RealTerrain !== 'undefined') && !!RealTerrain.active;
+    const uvs = usingReal ? new Float32Array(pos.count * 2) : null;
+    function colorT(h) {
+      if (usingReal) return Math.max(0, Math.min(1, (h + 300) / 2400));
+      return TerrainSystem.heightToColorT(h);
+    }
+    for (let i = 0; i < pos.count; i++) {
+      const lx = pos.getX(i), ly = pos.getY(i);
+      // Mapeo local->mundo tras rotateX(-90°): x se conserva, z_mundo = -y_local.
+      const wx = lx, wz = -ly;
+      const h = TerrainSystem.groundElevation(wx, wz);
+      pos.setZ(i, h); // pasa a ser la altura (mundo Y) tras la rotación de abajo
+      const isSeaPt = usingReal && RealTerrain.isSea(wx, wz);
+      const t = colorT(h);
+      const c = new THREE.Color();
+      if (isSeaPt) c.copy(seaC);
+      else if (t < 0.18) c.copy(sandC);
+      else if (t < 0.55) c.copy(grassC).lerp(rockC, (t - 0.18) / 0.37 * 0.4);
+      else if (t < 0.8) c.copy(rockC);
+      else c.copy(rockC).lerp(snowC, (t - 0.8) / 0.2);
+      colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+      if (usingReal) {
+        const uvPt = RealTerrain.uv(wx, wz);
+        uvs[i * 2] = uvPt.u; uvs[i * 2 + 1] = uvPt.v;
+      }
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    if (usingReal) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geo.rotateX(-Math.PI / 2);
+    geo.translate(0, -0.3, 0); // ligeramente por debajo del "ground" existente, evita z-fighting
+    geo.computeVertexNormals();
+    _terrainGeoCache = geo;
+    return geo;
+  }
+  function refreshTerrainVisual() {
+    const mobile = window.innerWidth < 900;
+    const icao = (typeof RealTerrain !== 'undefined') ? RealTerrain.active : null;
+    const usingReal = !!icao;
+    const hasSat = usingReal && RealTerrain.hasSatellite(icao);
+    const newGeo = getTerrainGeometry(mobile, true);
+    _terrainMeshRefs.forEach(m => {
+      m.geometry = newGeo;
+      if (hasSat) {
+        m.material.map = RealTerrain.getSatTexture(icao);
+        m.material.vertexColors = false;
+        m.material.color.setHex(0xffffff);
+      } else {
+        m.material.map = null;
+        m.material.vertexColors = true;
+        m.material.color.setHex(0xffffff);
+      }
+      m.material.needsUpdate = true;
+    });
+    _fogRefs.forEach(f => { f.far = usingReal ? FOG_FAR_REAL : FOG_FAR_PROCEDURAL; });
+    rebuildRoads(icao);
+    rebuildPlaces(icao);
+  }
+  if (typeof window !== 'undefined') window.refreshTerrainVisual = refreshTerrainVisual;
+
+  // Carreteras principales reales (líneas finas, algo elevadas sobre el
+  // terreno para evitar z-fighting). Se reconstruyen cada vez que cambias de
+  // aeródromo; si no hay datos de carreteras para el sitio, simplemente no
+  // se dibuja nada (no rompe ni afecta al resto).
+  const _roadGroupRefs = [];
+  const _placeGroupRefs = [];
+  function makeLabelSprite(text, color, worldHeight) {
+    const fontSize = 48;
+    const cnv = document.createElement('canvas');
+    const ctx = cnv.getContext('2d');
+    ctx.font = 'bold ' + fontSize + 'px sans-serif';
+    const textW = Math.ceil(ctx.measureText(text).width);
+    cnv.width = textW + 24; cnv.height = fontSize + 20;
+    ctx.font = 'bold ' + fontSize + 'px sans-serif';
+    ctx.fillStyle = 'rgba(8,12,20,0.55)';
+    ctx.fillRect(0, 0, cnv.width, cnv.height);
+    ctx.fillStyle = color;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 12, cnv.height / 2);
+    const tex = new THREE.CanvasTexture(cnv);
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+    const spr = new THREE.Sprite(mat);
+    const aspect = cnv.width / cnv.height;
+    spr.scale.set(worldHeight * aspect, worldHeight, 1);
+    return spr;
+  }
+  function rebuildPlaces(icao) {
+    _placeGroupRefs.forEach(g => {
+      while (g.children.length) {
+        const c = g.children.pop();
+        g.remove(c);
+      }
+    });
+    if (!icao) return;
+    const places = RealTerrain.getPlaces(icao);
+    if (!places || !places.length) return;
+    places.forEach(p => {
+      const rp = RealTerrain.realToSim(icao, p.lat, p.lon);
+      const gy = TerrainSystem.groundElevation(rp.x, rp.z);
+      let worldHeight = 90, color = '#dfe6f0', label = p.name;
+      if (p.type === 'city') { worldHeight = 170; color = '#ffffff'; }
+      else if (p.type === 'town') { worldHeight = 130; color = '#f2f2f2'; }
+      else if (p.type === 'airport') { worldHeight = 190; color = '#8fd6ff'; label = '\u2708 ' + p.name; }
+      const spr = makeLabelSprite(label, color, worldHeight);
+      spr.position.set(rp.x, gy + 80, rp.z);
+      _placeGroupRefs.forEach(g => g.add(spr.clone()));
+    });
+  }
+  function rebuildRoads(icao) {
+    _roadGroupRefs.forEach(g => {
+      while (g.children.length) {
+        const c = g.children.pop();
+        g.remove(c);
+      }
+    });
+    if (!icao) return;
+    const roads = RealTerrain.getRoads(icao);
+    if (!roads || !roads.length) return;
+    const colorFor = cls => (cls === 'motorway') ? 0xffcf40 : (cls === 'trunk') ? 0xffb347 : 0xf2f2f2;
+    roads.forEach(r => {
+      const pts = [];
+      for (const pair of r.points) {
+        const rp = RealTerrain.realToSim(icao, pair[0], pair[1]);
+        const gy = TerrainSystem.groundElevation(rp.x, rp.z) + 3; // un poco por encima del terreno
+        pts.push(new THREE.Vector3(rp.x, gy, rp.z));
+      }
+      if (pts.length < 2) return;
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = new THREE.LineBasicMaterial({ color: colorFor(r.cls) });
+      const line = new THREE.Line(geo, mat);
+      _roadGroupRefs.forEach(g => g.add(line.clone()));
+    });
+  }
+
+  // Librea pintada por canvas (franja + filete + matrícula) — mucho más "de
+  // verdad" que un color plano, sin cargar ninguna textura externa.
+  function makeLiveryTexture(base, accent, trim, label) {
+    const cnv = document.createElement('canvas');
+    cnv.width = 512; cnv.height = 128;
+    const ctx = cnv.getContext('2d');
+    ctx.fillStyle = base; ctx.fillRect(0, 0, cnv.width, cnv.height);
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.moveTo(0, cnv.height * 0.58); ctx.lineTo(cnv.width, cnv.height * 0.34);
+    ctx.lineTo(cnv.width, cnv.height * 0.5); ctx.lineTo(0, cnv.height * 0.74);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = trim; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0, cnv.height * 0.58); ctx.lineTo(cnv.width, cnv.height * 0.34); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, cnv.height * 0.74); ctx.lineTo(cnv.width, cnv.height * 0.5); ctx.stroke();
+    ctx.fillStyle = trim;
+    ctx.font = 'bold 24px ui-monospace,Consolas,monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(label, cnv.width - 16, cnv.height - 16);
+    const tex = new THREE.CanvasTexture(cnv);
+    tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.anisotropy = 4;
+    return tex;
+  }
+
+  function makePlane(kind) {
+    const specs = {
+      c172: { base: '#f4f6f8', accent: '#1e6fd9', trim: '#0d3d80', span: 11, wingY: 0.42, fuse: 6.2, label: 'EC-172' },
+      pa28: { base: '#f4f6f8', accent: '#c9820a', trim: '#5d4037', span: 9.14, wingY: -0.14, fuse: 6.0, label: 'EC-ARR' },
+      extra: { base: '#e7ebee', accent: '#c62828', trim: '#1a1a1a', span: 9.46, wingY: -0.05, fuse: 8.6, label: 'EC-L39' }
+    };
+    const spec = specs[kind] || specs.c172;
+    const tex = makeLiveryTexture(spec.base, spec.accent, spec.trim, spec.label);
+    const bodyMat = new THREE.MeshLambertMaterial({ map: tex });
+    const wingMat = new THREE.MeshLambertMaterial({ color: spec.trim === '#5d4037' ? 0x4a4038 : 0xe9edf0 });
+    const trimMat = new THREE.MeshLambertMaterial({ color: spec.trim });
+    const glassMat = new THREE.MeshLambertMaterial({ color: 0x4a6a80, transparent: true, opacity: 0.55 });
+    const metalMat = new THREE.MeshLambertMaterial({ color: 0x2e343c });
+
+    const g = new THREE.Group();
+    const body = new THREE.Group();
+    g.add(body);
+
+    if (kind === 'extra') {
+      // ---------- L-39 Albatros: reactor de instrucción, sin hélice ----------
+      const fuseFront = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.72, spec.fuse * 0.55, 16), bodyMat);
+      fuseFront.rotation.z = Math.PI / 2; fuseFront.position.x = spec.fuse * 0.18;
+      body.add(fuseFront);
+      const fuseRear = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.42, spec.fuse * 0.5, 16), bodyMat);
+      fuseRear.rotation.z = Math.PI / 2; fuseRear.position.x = -spec.fuse * 0.32;
+      body.add(fuseRear);
+      const nose = new THREE.Mesh(new THREE.ConeGeometry(0.62, 1.5, 14), trimMat);
+      nose.rotation.z = -Math.PI / 2; nose.position.x = spec.fuse * 0.48;
+      body.add(nose);
+      // toberas de admisión (a cada lado, raíz de ala)
+      const intakeGeo = new THREE.CylinderGeometry(0.28, 0.24, 0.5, 10);
+      const inL = new THREE.Mesh(intakeGeo, metalMat); inL.rotation.z = Math.PI / 2;
+      inL.position.set(0.2, -0.15, 0.62); body.add(inL);
+      const inR = inL.clone(); inR.position.z = -0.62; body.add(inR);
+      // tobera de escape
+      const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.4, 0.5, 14), metalMat);
+      nozzle.rotation.z = Math.PI / 2; nozzle.position.x = -spec.fuse * 0.56;
+      body.add(nozzle);
+      // ala recta media, con depósitos de punta característicos
+      const wing = new THREE.Mesh(new THREE.BoxGeometry(1.55, 0.14, spec.span), wingMat);
+      wing.position.set(-0.1, spec.wingY, 0); body.add(wing);
+      const tankGeo = new THREE.CapsuleGeometry ? new THREE.CapsuleGeometry(0.16, 0.9, 4, 8) : new THREE.CylinderGeometry(0.16, 0.16, 0.9, 8);
+      const tipL = new THREE.Mesh(tankGeo, bodyMat); tipL.rotation.z = Math.PI / 2;
+      tipL.position.set(0.05, spec.wingY, spec.span / 2 + 0.15); body.add(tipL);
+      const tipR = tipL.clone(); tipR.position.z = -(spec.span / 2 + 0.15); body.add(tipR);
+      // cola: deriva con flecha + estabilizador
+      const vs = new THREE.Mesh(new THREE.BoxGeometry(1.3, 1.5, 0.12), trimMat);
+      vs.position.set(-3.55, 0.85, 0); vs.rotation.z = -0.28; body.add(vs);
+      const hs = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.1, 3.0), wingMat);
+      hs.position.set(-3.5, 1.35, 0); body.add(hs);
+      // carlinga tipo burbuja, tándem
+      const cab = new THREE.Mesh(new THREE.SphereGeometry(0.52, 12, 10), glassMat);
+      cab.position.set(1.0, 0.55, 0); cab.scale.set(1.9, 0.62, 0.72); body.add(cab);
+      const gm = trimMat;
+      const gear = new THREE.Group();
+      const gl = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.85, 8), gm); gl.position.set(0.1, -0.95, 1.35);
+      const gr = gl.clone(); gr.position.z = -1.35;
+      const gn = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.7, 8), gm); gn.position.set(2.6, -0.75, 0);
+      gear.add(gl, gr, gn); body.add(gear);
+      return { group: g, prop: new THREE.Group(), gear }; // sin hélice: prop vacío, mantiene la misma interfaz
+    }
+
+    // ---------- C172 / PA-28R Arrow: motor de pistón con hélice ----------
+    const isLowWing = kind === 'pa28';
+    const fuse = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.34, spec.fuse, 16), bodyMat);
+    fuse.rotation.z = Math.PI / 2; body.add(fuse);
+    const nose = new THREE.Mesh(new THREE.ConeGeometry(0.45, 1.05, 12), trimMat);
+    nose.rotation.z = -Math.PI / 2; nose.position.x = spec.fuse * 0.56; body.add(nose);
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.12, spec.span), wingMat);
+    wing.position.set(-0.15, spec.wingY, 0); body.add(wing);
+    if (!isLowWing) { // C172: refuerzos visibles del ala alta
+      const strutGeo = new THREE.CylinderGeometry(0.035, 0.035, 1.15, 6);
+      const stL = new THREE.Mesh(strutGeo, metalMat); stL.position.set(0.05, 0.15, 1.35); stL.rotation.x = -0.35;
+      const stR = stL.clone(); stR.position.z = -1.35; stR.rotation.x = 0.35;
+      body.add(stL, stR);
+    }
+    const hs = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.08, 3.0), wingMat);
+    hs.position.set(-2.7, 0.12, 0); body.add(hs);
+    const vs = new THREE.Mesh(new THREE.BoxGeometry(1.0, isLowWing ? 1.35 : 1.2, 0.1), trimMat);
+    vs.position.set(-2.7, isLowWing ? 0.85 : 0.78, 0);
+    if (isLowWing) vs.rotation.z = -0.12; // deriva más redondeada/atrasada, look Piper
+    body.add(vs);
+    const cab = new THREE.Mesh(new THREE.SphereGeometry(0.5, 12, 10), glassMat);
+    cab.position.set(1.2, 0.36, 0); cab.scale.set(1.25, 0.66, 0.7); body.add(cab);
+    const prop = new THREE.Group();
+    prop.add(new THREE.Mesh(new THREE.BoxGeometry(0.07, 2.05, 0.1), metalMat));
+    prop.position.x = spec.fuse * 0.56 + 0.55;
+    body.add(prop);
+    const gear = new THREE.Group();
+    if (isLowWing) {
+      // Arrow: tren "retráctil" — carenados más finos y pegados al fuselaje
+      const gl = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.55, 8), metalMat); gl.position.set(0.2, -0.6, 0.9);
+      const gr = gl.clone(); gr.position.z = -0.9;
+      const gn = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.45, 8), metalMat); gn.position.set(2.0, -0.5, 0);
+      gear.add(gl, gr, gn);
+    } else {
+      const gl = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.7, 8), metalMat); gl.position.set(0.15, -0.72, 1.15);
+      const gr = gl.clone(); gr.position.z = -1.15;
+      const gn = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.55, 8), metalMat); gn.position.set(2.15, -0.62, 0);
+      gear.add(gl, gr, gn);
+    }
+    body.add(gear);
+    return { group: g, prop, gear };
+  }
+
+  const cockpitScene = world();
+  const exteriorScene = world();
+  let planeExt = makePlane('c172');
+  exteriorScene.add(planeExt.group);
+
+  /* Cabina: no metemos el avión (taparía el parabrisas). Solo marco 3D unido a la cámara. */
+  const cockpitCam = new THREE.PerspectiveCamera(62, 1, 0.08, 45000);
+  const extCam = new THREE.PerspectiveCamera(55, 1, 0.2, 45000);
+  const dash = new THREE.Group();
+  const dark = new THREE.MeshStandardMaterial({ color: 0x1a1e28, roughness: 0.9 });
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.22, 0.18), dark);
+  panel.position.set(0, -0.16, -0.52);
+  dash.add(panel);
+  const glare = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.06, 0.35), dark);
+  glare.position.set(0, -0.18, -0.45);
+  dash.add(glare);
+  const pillarL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.7, 0.06), dark);
+  pillarL.position.set(-0.72, 0.05, -0.55);
+  pillarL.rotation.z = 0.18;
+  const pillarR = pillarL.clone(); pillarR.position.x = 0.72; pillarR.rotation.z = -0.18;
+  dash.add(pillarL, pillarR);
+  const yoke = new THREE.Group();
+  const yCol = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.38, 8), dark);
+  yCol.position.y = -0.12;
+  const yWheel = new THREE.Mesh(new THREE.TorusGeometry(0.065, 0.011, 8, 14), new THREE.MeshLambertMaterial({ color: 0x3a424c }));
+  yWheel.position.y = 0.04;
+  yoke.add(yCol, yWheel);
+  yoke.add(new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8), new THREE.MeshLambertMaterial({ color: 0xcc3333 })));
+  const yb2 = new THREE.Mesh(new THREE.SphereGeometry(0.012, 8, 8), new THREE.MeshLambertMaterial({ color: 0x33cc33 }));
+  yb2.position.x = -0.06; yoke.add(yb2);
+  yoke.position.set(0, -0.24, -0.38);
+  dash.add(yoke);
+  const thrLever = new THREE.Group();
+  const thrStick = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.16, 0.03), new THREE.MeshStandardMaterial({ color: 0x3ecf8e }));
+  thrStick.position.y = 0.08;
+  thrLever.add(thrStick);
+  thrLever.position.set(0.28, -0.38, -0.38);
+  dash.add(thrLever);
+  const flapLever = new THREE.Group();
+  const flStick = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.14, 0.025), new THREE.MeshStandardMaterial({ color: 0xf0b429 }));
+  flStick.position.y = 0.07;
+  flapLever.add(flStick);
+  flapLever.position.set(0.36, -0.38, -0.38);
+  dash.add(flapLever);
+  const pedL = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.02, 0.12), dark);
+  const pedR = pedL.clone();
+  pedL.position.set(-0.12, -0.52, -0.40);
+  pedR.position.set(0.12, -0.52, -0.40);
+  dash.add(pedL, pedR);
+  const mixLever = new THREE.Group();
+  mixLever.add(new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.12, 0.02), new THREE.MeshLambertMaterial({ color: 0xff6b35 })));
+  mixLever.position.set(0.32, -0.38, -0.38);
+  dash.add(mixLever);
+  const needles = {};
+  ['IAS','ALT','VSI','ATT','HDG','TC'].forEach((lb, i) => {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(new THREE.CircleGeometry(0.026, 16), new THREE.MeshLambertMaterial({ color: 0x11161f, emissive: 0x1a3040, emissiveIntensity: 0.25 })));
+    const nd = new THREE.Mesh(new THREE.BoxGeometry(0.003, 0.02, 0.002), new THREE.MeshLambertMaterial({ color: 0xffcc44, emissive: 0xff8800, emissiveIntensity: 0.45 }));
+    nd.position.z = 0.008;
+    g.add(nd);
+    g.position.set(-0.26 + i * 0.085, -0.155, -0.50);
+    dash.add(g);
+    needles[lb] = nd;
+  });
+  const gns = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.08, 0.04), new THREE.MeshLambertMaterial({ color: 0x0a2a3a, emissive: 0x123848, emissiveIntensity: 0.35 }));
+  gns.position.set(0.32, -0.20, -0.48);
+  gns.scale.set(0.55, 0.55, 0.55);
+  dash.add(gns);
+  ['RPM','FUEL'].forEach((lb, i) => {
+    const g = new THREE.Group();
+    g.add(new THREE.Mesh(new THREE.CircleGeometry(0.018, 12), new THREE.MeshLambertMaterial({ color: 0x0a0e1a })));
+    const nd = new THREE.Mesh(new THREE.BoxGeometry(0.004, 0.032, 0.002), new THREE.MeshLambertMaterial({ color: 0xffaa44 }));
+    nd.position.z = 0.01;
+    g.add(nd);
+    g.position.set(-0.12 + i * 0.14, -0.22, -0.44);
+    dash.add(g);
+    needles[lb] = nd;
+  });
+  const hz = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-400, 0, -800), new THREE.Vector3(400, 0, -800)]),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 })
+  );
+  hz.visible = false;
+  cockpitScene.add(hz);
+  cockpitCam.add(dash);
+  cockpitScene.add(cockpitCam);
+
+  const cCanvas = document.getElementById('cockpitCanvas');
+  const eCanvas = document.getElementById('exteriorCanvas');
+  const mobileGL = window.innerWidth < 900 || (navigator.hardwareConcurrency || 8) <= 4;
+  const cR = new THREE.WebGLRenderer({ canvas: cCanvas, antialias: !mobileGL, powerPreference: 'high-performance', alpha: false });
+  const eR = new THREE.WebGLRenderer({ canvas: eCanvas, antialias: !mobileGL, powerPreference: 'high-performance', alpha: false });
+  const dpr = mobileGL ? Math.min(1.5, devicePixelRatio || 1) : Math.min(2, devicePixelRatio || 1);
+  [cR, eR].forEach(r => {
+    r.setPixelRatio(dpr);
+    r.toneMapping = THREE.ACESFilmicToneMapping;
+    r.toneMappingExposure = 1.12;
+    if (THREE.sRGBEncoding) r.outputEncoding = THREE.sRGBEncoding;
+  });
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const paniniOK = !isIOS && window.innerWidth >= 900;
+  let paniniOn = false;
+  const paniniRT = new THREE.WebGLRenderTarget(256, 256, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: true });
+  const paniniMat = new THREE.ShaderMaterial({
+    uniforms: { tDiffuse: { value: null }, distortion: { value: 0.08 }, aspect: { value: 1.6 } },
+    vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }',
+    fragmentShader: [
+      'uniform sampler2D tDiffuse; uniform float distortion; uniform float aspect; varying vec2 vUv;',
+      'void main(){',
+      '  vec2 p=vUv*2.0-1.0; p.x*=aspect;',
+      '  float r=length(p); float s=(1.0+distortion)/(1.0+distortion*max(r,1e-4));',
+      '  vec2 q=p*s; q.x/=aspect; vec2 uv=clamp((q+1.0)*0.5,0.002,0.998);',
+      '  vec3 col=texture2D(tDiffuse,uv).rgb;',
+      '  float vig=1.0-0.10*dot(p,p);',
+      '  gl_FragColor=vec4(col*vig,1.0);',
+      '}'
+    ].join('\n')
+  });
+  paniniMat.uniforms.tDiffuse.value = paniniRT.texture;
+  const paniniScene = new THREE.Scene();
+  const paniniCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  paniniScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), paniniMat));
+
+  function fit(renderer, cam, wrap) {
+    const w = Math.max(16, wrap.clientWidth);
+    const h = Math.max(16, wrap.clientHeight);
+    cam.aspect = w / h;
+    cam.updateProjectionMatrix();
+    renderer.setSize(w, h, false);
+    if (renderer === cR) {
+      paniniRT.setSize(Math.floor(w * dpr), Math.floor(h * dpr));
+      paniniMat.uniforms.aspect.value = w / Math.max(1, h);
+    }
+  }
+  function resize() {
+    fit(cR, cockpitCam, document.getElementById('cockpitWrap'));
+    fit(eR, extCam, document.getElementById('extWrap'));
+    if (mlMap) { try { mlMap.resize(); } catch (e) { console.error('mlMap.resize:', e); } }
+  }
+  addEventListener('resize', resize);
+  setTimeout(resize, 50);
+  setTimeout(resize, 300);
+  resize();
+
+  const $ = id => document.getElementById(id);
+  const sl = {
+    throttle: $('slThrottle'), elevator: $('slElevator'), aileron: $('slAileron'),
+    rudder: $('slRudder'), flap: $('slFlap'), brake: $('slBrake')
+  };
+  let mode = 'manual';
+  function setView(name) {
+    document.body.classList.remove('view-cockpit', 'view-ext');
+    if (name === 'cockpit') document.body.classList.add('view-cockpit');
+    if (name === 'ext') document.body.classList.add('view-ext');
+    ['vwSplit','vwCock','vwExt'].forEach(id => $(id).classList.remove('on'));
+    $(name === 'cockpit' ? 'vwCock' : name === 'ext' ? 'vwExt' : 'vwSplit').classList.add('on');
+    setTimeout(resize, 30);
+  }
+  $('vwSplit').onclick = () => setView('split');
+  $('vwCock').onclick = () => setView('cockpit');
+  $('vwExt').onclick = () => setView('ext');
+  $('cockpitWrap').addEventListener('dblclick', () => setView(document.body.classList.contains('view-cockpit') ? 'split' : 'cockpit'));
+  $('extWrap').addEventListener('dblclick', () => setView(document.body.classList.contains('view-ext') ? 'split' : 'ext'));
+  const keys = {};
+  addEventListener('keydown', e => {
+    keys[e.key] = true;
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+    if (e.key === 'g' || e.key === 'G') {
+      ac.gearDown = !ac.gearDown;
+      $('btnGear').textContent = ac.gearDown ? 'Tren ↓' : 'Tren ↑';
+    }
+    if (e.key === 't' || e.key === 'T') {
+      mode = mode === 'manual' ? 'auto' : 'manual';
+      if (mode === 'auto') { ac.reset('approach'); ac.enableAutoland(); scene('approach', 'scApproach'); }
+      else ac.disableAutopilot();
+      setMode();
+    }
+    if (e.key === 'r' || e.key === 'R') scene(currentScene, currentScene === 'ground' ? 'scGround' : currentScene === 'cruise' ? 'scCruise' : currentScene === 'flare' ? 'scFlare' : 'scApproach');
+  });
+  addEventListener('keyup', e => { keys[e.key] = false; });
+
+  function fromSliders() {
+    ac.controls.throttle = +sl.throttle.value;
+    ac.controls.elevator = +sl.elevator.value;
+    ac.controls.aileron = +sl.aileron.value;
+    ac.controls.rudder = +sl.rudder.value;
+    ac.controls.flap = +sl.flap.value;
+    ac.controls.brake = +sl.brake.value;
+  }
+  Object.values(sl).forEach(s => s.addEventListener('input', fromSliders));
+  (function bindTouch() {
+    const thrPad = $('thrPad'), stkPad = $('stkPad');
+    if (!thrPad || !stkPad) return;
+    function clamp01(x){ return Math.max(0, Math.min(1, x)); }
+    function setThr(clientY) {
+      const r = thrPad.getBoundingClientRect();
+      const t = clamp01(1 - (clientY - r.top) / r.height);
+      sl.throttle.value = t.toFixed(3);
+      $('thrKnob').style.bottom = (t * 72) + '%';
+      fromSliders(); vals();
+    }
+    function setStk(clientX, clientY, end) {
+      const r = stkPad.getBoundingClientRect();
+      let nx = (clientX - r.left) / r.width * 2 - 1;
+      let ny = (clientY - r.top) / r.height * 2 - 1;
+      nx = Math.max(-1, Math.min(1, nx));
+      ny = Math.max(-1, Math.min(1, ny));
+      if (end) { nx = 0; ny = 0; }
+      sl.aileron.value = nx.toFixed(3);
+      sl.elevator.value = (-ny).toFixed(3);
+      $('stkKnob').style.left = (38 + nx * 34) + 'px';
+      $('stkKnob').style.top = (38 + ny * 34) + 'px';
+      fromSliders(); vals();
+    }
+    function bindPad(el, move, end) {
+      const go = (e, fin) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (fin) end(e); else move(e);
+      };
+      el.addEventListener('pointerdown', e => { el.setPointerCapture(e.pointerId); go(e, false); });
+      el.addEventListener('pointermove', e => { if (e.buttons || e.pressure) go(e, false); });
+      el.addEventListener('pointerup', e => go(e, true));
+      el.addEventListener('pointercancel', e => go(e, true));
+      el.addEventListener('touchstart', e => { e.preventDefault(); move(e.touches[0]); }, { passive: false });
+      el.addEventListener('touchmove', e => { e.preventDefault(); move(e.touches[0]); }, { passive: false });
+      el.addEventListener('touchend', e => { e.preventDefault(); end(e); }, { passive: false });
+    }
+    bindPad(thrPad, ev => setThr(ev.clientY), () => {});
+    bindPad(stkPad, ev => setStk(ev.clientX, ev.clientY, false), ev => setStk(0, 0, true));
+  })();
+
+  function syncSliders() {
+    sl.throttle.value = ac.controls.throttle;
+    sl.elevator.value = ac.controls.elevator;
+    sl.aileron.value = ac.controls.aileron;
+    sl.rudder.value = ac.controls.rudder;
+    sl.flap.value = ac.controls.flap;
+    sl.brake.value = ac.controls.brake;
+    vals();
+  }
+  function vals() {
+    $('valThrottle').textContent = Math.round(ac.controls.throttle * 100) + '%';
+    $('valElevator').textContent = Math.round(ac.controls.elevator * 100);
+    $('valAileron').textContent = Math.round(ac.controls.aileron * 100);
+    $('valRudder').textContent = Math.round(ac.controls.rudder * 100);
+    $('valFlap').textContent = Math.round(ac.controls.flap * 100) + '%';
+    $('valBrake').textContent = Math.round(ac.controls.brake * 100) + '%';
+  }
+  function setMode() {
+    $('modeManual').classList.toggle('on', mode === 'manual');
+    $('modeAuto').classList.toggle('on', mode === 'auto');
+    $('apStatus').classList.toggle('show', mode === 'auto');
+  }
+  function scene(kind, btn) {
+    currentScene = kind;
+    ac.reset(kind);
+    ['scGround','scApproach','scCruise','scFlare'].forEach(id => $(id).classList.toggle('on', id === btn));
+    if (mode === 'auto') ac.enableAutoland();
+    else ac.disableAutopilot();
+    syncSliders();
+  }
+  $('scGround').onclick = () => { mode = 'manual'; ac.disableAutopilot(); scene('ground', 'scGround'); setMode(); };
+  $('scApproach').onclick = () => scene('approach', 'scApproach');
+  $('scCruise').onclick = () => { mode = 'manual'; ac.disableAutopilot(); scene('cruise', 'scCruise'); setMode(); };
+  $('scFlare').onclick = () => { mode = 'manual'; ac.disableAutopilot(); scene('flare', 'scFlare'); setMode(); };
+
+  // Selector de terreno real (Fase 1): archivos estáticos en terrain/, sin backend.
+  // Al elegir un aeródromo se cargan sus datos reales bajo demanda; hasta que
+  // termine la carga (o si falla, p.ej. abriendo el HTML como file:// sin
+  // servidor), TerrainSystem sigue devolviendo relieve procedural — nunca deja
+  // el terreno "roto" ni afecta al aterrizaje/autoland mientras tanto.
+  const terrBtnIds = ['terrGeneric', 'terrLEAS', 'terrLELN', 'terrLEXJ', 'terrLEBB', 'terrLEST'];
+  function setTerrainBtn(activeId) {
+    terrBtnIds.forEach(id => $(id).classList.toggle('on', id === activeId));
+  }
+  function selectTerrain(icao, btnId) {
+    setTerrainBtn(btnId);
+    if (!icao) {
+      RealTerrain.clear();
+      $('terrStatus').textContent = 'Relieve procedural (sin conexión a datos reales).';
+      if (window.refreshTerrainVisual) window.refreshTerrainVisual();
+      return;
+    }
+    $('terrStatus').textContent = 'Cargando relieve real de ' + icao + '…';
+    RealTerrain.load(icao).then(entry => {
+      if (RealTerrain.active !== icao) return; // el usuario cambió de sitio antes de terminar
+      $('terrStatus').textContent = 'Relieve real cargado: ' + entry.meta.name + ' (' + entry.meta.side_km + ' km, ' + Math.round(entry.meta.meters_per_pixel) + ' m/px). Cargando imagen y carreteras…';
+      if (window.refreshTerrainVisual) window.refreshTerrainVisual();
+      if (mlMap) mlMap.jumpTo({ center: [entry.meta.field_lon, entry.meta.field_lat], zoom: 11 });
+      // Satélite y carreteras son una mejora opcional aparte: si no existen
+      // (aún no has corrido fetch_terrain_v2.py) o fallan, el relieve por
+      // altura ya cargado sigue funcionando exactamente igual, sin romperse.
+      return Promise.all([
+        RealTerrain.loadSatellite(icao).catch(() => null),
+        RealTerrain.loadRoads(icao).catch(() => null),
+        RealTerrain.loadPlaces(icao).catch(() => null)
+      ]).then(([tex, roads, places]) => {
+        if (RealTerrain.active !== icao) return;
+        if (window.refreshTerrainVisual) window.refreshTerrainVisual();
+        const bits = [];
+        bits.push(tex ? 'imagen satelital ✓' : 'sin imagen satelital');
+        bits.push((roads && roads.length) ? ('carreteras ✓ (' + roads.length + ')') : 'sin carreteras');
+        bits.push((places && places.length) ? ('núcleos/aeródromos ✓ (' + places.length + ')') : 'sin núcleos');
+        $('terrStatus').textContent = 'Relieve real cargado: ' + entry.meta.name + ' — ' + bits.join(', ') + '.';
+      });
+    }).catch(err => {
+      $('terrStatus').textContent = 'No se pudo cargar el relieve real (¿sirviendo por file://? usa un servidor/Netlify). Terreno procedural activo.';
+    });
+  }
+  $('terrGeneric').onclick = () => selectTerrain(null, 'terrGeneric');
+  $('terrLEAS').onclick = () => selectTerrain('LEAS', 'terrLEAS');
+  $('terrLELN').onclick = () => selectTerrain('LELN', 'terrLELN');
+  $('terrLEXJ').onclick = () => selectTerrain('LEXJ', 'terrLEXJ');
+  $('terrLEBB').onclick = () => selectTerrain('LEBB', 'terrLEBB');
+  $('terrLEST').onclick = () => selectTerrain('LEST', 'terrLEST');
+  $('modeManual').onclick = () => { mode = 'manual'; ac.disableAutopilot(); setMode(); };
+  $('modeAuto').onclick = () => { mode = 'auto'; ac.reset('approach'); ac.enableAutoland(); scene('approach', 'scApproach'); setMode(); };
+  $('btnGear').onclick = () => {
+    ac.gearDown = !ac.gearDown;
+    $('btnGear').textContent = ac.gearDown ? 'Tren ↓' : 'Tren ↑';
+    planeExt.gear.visible = !!ac.gearDown;
+  };
+  $('btnReset').onclick = () => { scene('approach', 'scApproach'); };
+  function badge() {
+    const el = $('typeBadge');
+    const txt = (ac.typeName || typeId) + ' · ' + fidelity;
+    if (el) el.textContent = txt;
+    const el2 = $('typeBadge2');
+    if (el2) el2.textContent = txt;
+  }
+  function loadType(id) {
+    typeId = id;
+    ac = AviationEngine.create(id);
+    ac.setFidelity(fidelity);
+    ac.reset(currentScene);
+    if (mode === 'auto') ac.enableAutoland();
+    exteriorScene.remove(planeExt.group);
+    planeExt = makePlane(id);
+    exteriorScene.add(planeExt.group);
+    ['c172','pa28','extra'].forEach(t => $('tp-' + t).classList.toggle('on', t === id));
+    syncSliders();
+    badge();
+  }
+  $('tp-c172').onclick = () => loadType('c172');
+  $('tp-pa28').onclick = () => loadType('pa28');
+  $('tp-extra').onclick = () => loadType('extra');
+  function setFid(lvl) {
+    fidelity = ac.setFidelity(lvl);
+    $('fidA').classList.toggle('on', fidelity === 'A');
+    $('fidB').classList.toggle('on', fidelity === 'B');
+    $('fidC').classList.toggle('on', fidelity === 'C');
+    if ($('fidD')) $('fidD').classList.toggle('on', fidelity === 'D');
+    cockpitCam.fov = fidelity === 'D' ? 75 : (fidelity === 'C' ? 92 : 62);
+    cockpitCam.updateProjectionMatrix();
+    hz.visible = fidelity === 'C';
+    paniniOn = paniniOK && fidelity === 'C';
+    try { localStorage.setItem('avionPrefs', JSON.stringify({ fidelity, typeId, light: currentLight })); } catch (e) {}
+    badge();
+  }
+  $('fidA').onclick = () => setFid('A');
+  $('fidB').onclick = () => setFid('B');
+  $('fidC').onclick = () => setFid('C');
+  if ($('fidD')) $('fidD').onclick = () => setFid('D');
+  function runQTG() {
+    const a = ac.aero;
+    const c0 = a.coeffs(0, 0, 0, 0, 0, 50, 0, 0, 0, 0, false, 300);
+    const c16 = a.coeffs(16 * Math.PI / 180, 0, 0, 0, 0, 40, 0, 0, 0, 0, false, 300);
+    const c18 = a.coeffs(18 * Math.PI / 180, 0, 0, 0, 0, 40, 0, 0, 0, 0, false, 300);
+    const hp = (ac.prop.Pmax || 0) / 746;
+    const tests = [
+      { n: 'UIUC CL(0) 0.31', exp: 0.31, act: c0.CL, tol: 0.08 },
+      { n: 'UIUC CD(0)~0.03', exp: 0.032, act: c0.CD, tol: 0.025 },
+      { n: 'CLmax>~1.1@12-16', exp: 1.15, act: c16.CL, tol: 0.35 },
+      { n: 'post-stall CL↓', exp: 1, act: c16.CL > c18.CL ? 1 : 0, tol: 0.5 },
+      { n: 'O-320 ~160 hp', exp: 160, act: hp, tol: 45 },
+      { n: 'Cmq<0 (POH stab.)', exp: -1, act: a.Cmq < 0 ? -1 : 1, tol: 0.1 },
+      { n: 'Cnβ>0 veleta', exp: 1, act: a.Cnbeta > 0 ? 1 : 0, tol: 0.5 }
+    ];
+    let pass = 0;
+    const lines = tests.map(t => {
+      const ok = Math.abs(t.act - t.exp) <= t.tol;
+      if (ok) pass++;
+      return (ok ? 'OK ' : 'NO ') + t.n;
+    });
+    const msg = 'QTG* software ' + pass + '/' + tests.length + ' · ' + lines.join(' · ') + ' · NO es QTG EASA';
+    if ($('typeBadge2')) $('typeBadge2').textContent = msg;
+    else alert(msg);
+  }
+  if ($('btnQtg')) $('btnQtg').onclick = runQTG;
+  const tr = { t: [], th: [], v: [], last: 0 };
+  function pushTrace(t) {
+    const now = ac.time || 0;
+    if (now - tr.last < 0.05) return;
+    tr.last = now;
+    tr.t.push(now); tr.th.push(t.state.theta); tr.v.push(t.flight.V);
+    while (tr.t.length && now - tr.t[0] > 30) { tr.t.shift(); tr.th.shift(); tr.v.shift(); }
+    const cv = $('traceCv');
+    if (!cv || !cv.getContext) return;
+    const g = cv.getContext('2d');
+    const w = cv.width, h = cv.height;
+    g.fillStyle = '#070b12'; g.fillRect(0, 0, w, h);
+    if (tr.t.length < 2) return;
+    const t0 = tr.t[0], span = Math.max(1, tr.t[tr.t.length - 1] - t0);
+    function line(arr, col, lo, hi) {
+      g.beginPath();
+      for (let i = 0; i < arr.length; i++) {
+        const x = ((tr.t[i] - t0) / span) * w;
+        const y = h - ((arr[i] - lo) / (hi - lo)) * (h - 8) - 4;
+        if (i) g.lineTo(x, y); else g.moveTo(x, y);
+      }
+      g.strokeStyle = col; g.lineWidth = 1.5; g.stroke();
+    }
+    line(tr.v, '#4fc3f7', 0, 70);
+    line(tr.th, '#f0b429', -0.25, 0.25);
+    g.fillStyle = '#9aa8b8'; g.font = '11px monospace';
+    g.fillText('V m/s', 8, 14); g.fillStyle = '#f0b429'; g.fillText('θ', 64, 14);
+  }
+  function bindWind() {
+    const ve = $('slWindVe'), vn = $('slWindVn');
+    if (!ve) return;
+    const syncW = () => {
+      ac.wind.ve = parseFloat(ve.value) || 0;
+      ac.wind.vn = parseFloat(vn.value) || 0;
+      $('valWindVe').textContent = Math.round(ac.wind.ve * 1.944) + ' kt';
+      $('valWindVn').textContent = Math.round(ac.wind.vn * 1.944) + ' kt';
+    };
+    ve.oninput = vn.oninput = syncW;
+    ve.value = ac.wind.ve; vn.value = ac.wind.vn; syncW();
+  }
+  bindWind();
+  let motionOn = false;
+  const mot = { lx: 0, ly: 0, lz: 0, tx: 0, ty: 0, tz: 0, sx: 0, sy: 0, sz: 0, tp: 0, tr: 0 };
+  let snd = null;
+  function startSound() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    const ctx = new AC();
+    const master = ctx.createGain();
+    master.gain.value = 0.35;
+    master.connect(ctx.destination);
+    function noise(sec, amp) {
+      const n = Math.floor(ctx.sampleRate * sec);
+      const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * amp;
+      const src = ctx.createBufferSource();
+      src.buffer = buf; src.loop = true; src.start();
+      return src;
+    }
+    const engG = ctx.createGain(); engG.gain.value = 0; engG.connect(master);
+    const oscs = [];
+    for (let i = 0; i < 4; i++) {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sawtooth';
+      o.frequency.value = 70 * (i + 1);
+      g.gain.value = 0.12 / (i + 1);
+      o.connect(g); g.connect(engG); o.start();
+      oscs.push({ o, g, k: i + 1 });
+    }
+    const windG = ctx.createGain(); windG.gain.value = 0;
+    const windF = ctx.createBiquadFilter(); windF.type = 'lowpass'; windF.frequency.value = 400;
+    noise(0.4, 0.35).connect(windF); windF.connect(windG); windG.connect(master);
+    const whG = ctx.createGain(); whG.gain.value = 0;
+    const whF = ctx.createBiquadFilter(); whF.type = 'bandpass'; whF.frequency.value = 280; whF.Q.value = 0.6;
+    noise(0.25, 0.4).connect(whF); whF.connect(whG); whG.connect(master);
+    const bfG = ctx.createGain(); bfG.gain.value = 0;
+    const bfO = ctx.createOscillator(); bfO.type = 'sawtooth'; bfO.frequency.value = 22; bfO.start();
+    bfO.connect(bfG); bfG.connect(master);
+    return {
+      ctx,
+      update(t) {
+        if (ctx.state === 'suspended') ctx.resume();
+        const rpm = (t.prop && t.prop.rpm) || ac.controls.throttle * 2200;
+        const thr = ac.controls.throttle;
+        const pitch = 60 + rpm * 0.06;
+        oscs.forEach(x => { x.o.frequency.setTargetAtTime(pitch * x.k, ctx.currentTime, 0.08); });
+        engG.gain.setTargetAtTime(0.04 + thr * 0.18, ctx.currentTime, 0.05);
+        const V = t.flight.V || 0;
+        windG.gain.setTargetAtTime(Math.min(0.12, V / 180), ctx.currentTime, 0.1);
+        windF.frequency.setTargetAtTime(180 + V * 3, ctx.currentTime, 0.1);
+        const gnd = !!(t.flight.onGround);
+        whG.gain.setTargetAtTime(gnd && V > 2 ? Math.min(0.14, V / 80) : 0, ctx.currentTime, 0.05);
+        const bf = t.aero && t.aero.buffet ? t.aero.buffet : 0;
+        bfG.gain.setTargetAtTime(bf * 0.08, ctx.currentTime, 0.05);
+        bfO.frequency.setTargetAtTime(12 + bf * 40, ctx.currentTime, 0.05);
+      },
+      stop() { try { ctx.close(); } catch (e) {} }
+    };
+  }
+  $('btnSnd').onclick = () => {
+    if (!snd) {
+      snd = startSound();
+      if (snd && snd.ctx) snd.ctx.resume();
+    } else {
+      snd.stop();
+      snd = null;
+    }
+    $('btnSnd').classList.toggle('on', !!snd);
+  };
+  $('btnMot').onclick = () => {
+    motionOn = !motionOn;
+    $('btnMot').classList.toggle('on', motionOn);
+    if (!motionOn) Object.keys(mot).forEach(k => { mot[k] = 0; });
+  };
+  let currentLight = 'day';
+  function setLight(mode) {
+    currentLight = mode;
+    const P = {
+      day: { bg: 0x6ea8d4, fog: 0x6ea8d4, sun: 1.05, hemi: 0.5, exp: 1.12, cabin: 0 },
+      dusk: { bg: 0xc47a48, fog: 0x8a4a38, sun: 0.55, hemi: 0.28, exp: 0.9, cabin: 0.3 },
+      night: { bg: 0x05070e, fog: 0x080a12, sun: 0.08, hemi: 0.12, exp: 0.55, cabin: 0.7 }
+    }[mode];
+    [cockpitScene, exteriorScene].forEach(s => {
+      s.background.setHex(P.bg);
+      if (s.fog) s.fog.color.setHex(P.fog);
+      s.traverse(o => {
+        if (o.type === 'DirectionalLight') o.intensity = P.sun;
+        if (o.type === 'HemisphereLight') o.intensity = P.hemi;
+      });
+    });
+    cR.toneMappingExposure = P.exp;
+    eR.toneMappingExposure = P.exp;
+    ['litDay','litDusk','litNight'].forEach(id => $(id).classList.toggle('on', id === 'lit' + mode[0].toUpperCase() + mode.slice(1)));
+    const hudEl = document.querySelector('.hud');
+    if (hudEl) {
+      hudEl.classList.toggle('dusk', mode === 'dusk');
+      hudEl.classList.toggle('night', mode === 'night');
+    }
+    dash.traverse(o => {
+      if (o.material && o.material.emissive) o.material.emissiveIntensity = 0.15 + P.cabin * 0.7;
+    });
+    try {
+      localStorage.setItem('avionPrefs', JSON.stringify({ fidelity, typeId, light: currentLight }));
+    } catch (e) {}
+  }
+  $('litDay').onclick = () => setLight('day');
+  $('litDusk').onclick = () => setLight('dusk');
+  $('litNight').onclick = () => setLight('night');
+
+  function keysToSliders() {
+    if (keys.w || keys.W) sl.throttle.value = Math.min(1, +sl.throttle.value + 0.008);
+    if (keys.s || keys.S) sl.throttle.value = Math.max(0, +sl.throttle.value - 0.008);
+    if (keys.ArrowUp) sl.elevator.value = Math.min(1, +sl.elevator.value + 0.016);
+    if (keys.ArrowDown) sl.elevator.value = Math.max(-1, +sl.elevator.value - 0.016);
+    if (keys.ArrowLeft) sl.aileron.value = Math.max(-1, +sl.aileron.value - 0.016);
+    if (keys.ArrowRight) sl.aileron.value = Math.min(1, +sl.aileron.value + 0.016);
+    if (keys.a || keys.A) sl.rudder.value = Math.max(-1, +sl.rudder.value - 0.016);
+    if (keys.d || keys.D) sl.rudder.value = Math.min(1, +sl.rudder.value + 0.016);
+    if (keys.f || keys.F) sl.flap.value = Math.min(1, +sl.flap.value + 0.01);
+    if (keys.v || keys.V) sl.flap.value = Math.max(0, +sl.flap.value - 0.01);
+    if (keys.b || keys.B) sl.brake.value = Math.min(1, +sl.brake.value + 0.02);
+    else sl.brake.value = Math.max(0, +sl.brake.value - 0.008);
+    if (!keys.ArrowUp && !keys.ArrowDown) sl.elevator.value = (+sl.elevator.value * 0.92).toFixed(3);
+    if (!keys.ArrowLeft && !keys.ArrowRight) sl.aileron.value = (+sl.aileron.value * 0.9).toFixed(3);
+    fromSliders(); vals();
+  }
+
+  function xyz(t) {
+    return { x: t.state.z, y: Math.max(0.35, t.state.y), z: -t.state.x };
+  }
+
+  function placeExt(t) {
+    const p = xyz(t);
+    planeExt.group.position.set(p.x, p.y, p.z);
+    planeExt.group.rotation.set(-t.state.theta, -t.state.psi + Math.PI / 2, t.state.phi, 'YXZ');
+    planeExt.gear.visible = !!ac.gearDown;
+    const rpm = (t.prop && t.prop.rpm) || ac.controls.throttle * 2400;
+    planeExt.prop.rotation.x += 0.02 + rpm * 0.00025;
+    const dist = 16 + Math.min(10, t.flight.V * 0.05);
+    const spsi = Math.sin(t.state.psi), cpsi = Math.cos(t.state.psi);
+    extCam.position.set(p.x - spsi * dist, p.y + 3.8, p.z + cpsi * dist);
+    extCam.lookAt(p.x, p.y + 0.6, p.z);
+  }
+
+  function placeCockpit(t) {
+    const p = xyz(t);
+    const cpsi = Math.cos(t.state.psi), spsi = Math.sin(t.state.psi);
+    const cth = Math.cos(t.state.theta), sth = Math.sin(t.state.theta);
+    /* Ojo del piloto: un poco atrás de la nariz, sobre el eje. */
+    const fx = spsi * cth, fy = sth, fz = -cpsi * cth;
+    cockpitCam.position.set(p.x + fx * 1.15, p.y + 0.62 + fy * 0.2, p.z + fz * 1.15);
+    cockpitCam.up.set(0, 1, 0);
+    cockpitCam.lookAt(
+      p.x + fx * 80,
+      p.y + 0.4 + t.state.theta * 40,
+      p.z + fz * 80
+    );
+    cockpitCam.rotation.z = t.state.phi;
+    const buf = (t.buffet != null ? t.buffet : ac.buffet) || 0;
+    const gust = ac.turbulence || 0;
+    const shake = buf * 0.055 + gust * 0.018;
+    if (shake > 0.002) {
+      const tm = ac.time || 0;
+      cockpitCam.position.x += shake * Math.sin(tm * 17.3);
+      cockpitCam.position.y += shake * 0.7 * Math.sin(tm * 21.1 + 0.6);
+      cockpitCam.rotation.z += shake * 0.15 * Math.sin(tm * 13.7);
+    }
+    if (motionOn) {
+      const ax = (ac.controls.throttle - 0.35) * 6;
+      const ay = (t.state.phi || 0) * 12;
+      const az = ((t.state.gForce || t.flight.nz || 1) - 1) * 9.81;
+      const al = 0.016 / 0.516;
+      mot.lx += al * (ax - mot.lx);
+      mot.ly += al * (ay - mot.ly);
+      mot.lz += al * (az - mot.lz);
+      mot.tx += ((ax - mot.lx) - mot.tx) * 0.15;
+      mot.ty += ((ay - mot.ly) - mot.ty) * 0.15;
+      mot.tz += ((az - mot.lz) - mot.tz) * 0.15;
+      const lim = (v, m) => Math.max(-m, Math.min(m, v));
+      mot.sx += (lim(mot.tx * 0.015, 0.04) - mot.sx) * 0.12;
+      mot.sy += (lim(mot.ty * 0.015, 0.03) - mot.sy) * 0.12;
+      mot.sz += (lim(mot.tz * 0.008, 0.02) - mot.sz) * 0.12;
+      mot.tp += (lim(mot.lx * 0.08 / 9.81, 0.04) - mot.tp) * 0.12;
+      mot.tr += (lim(-mot.ly * 0.08 / 9.81, 0.04) - mot.tr) * 0.12;
+      cockpitCam.position.x += mot.sy;
+      cockpitCam.position.y += mot.sz;
+      cockpitCam.position.z += mot.sx;
+      cockpitCam.rotation.x += mot.tp * 0.5;
+      cockpitCam.rotation.z += mot.tr * 0.5;
+    }
+  }
+
+  function hud(t) {
+    const ias = t.flight.iasKmh, alt = t.state.y, vs = t.flight.hdot, a = t.flight.alphaDeg;
+    $('hudIas').textContent = Math.round(ias);
+    $('hudAlt').textContent = Math.round(alt);
+    $('hudVs').textContent = vs.toFixed(1);
+    $('hudAlpha').textContent = a.toFixed(1);
+    $('hudG').textContent = (t.state.gForce || t.flight.nz || 1).toFixed(2);
+    const att = $('attMark');
+    if (att) att.style.transform = 'translateY(' + (-t.state.theta * 40).toFixed(1) + 'px) rotate(' + (-t.state.phi * 57.3).toFixed(1) + 'deg)';
+    const pg = $('pitchGroup');
+    if (pg) pg.style.transform = 'rotate(' + (-t.state.phi * 57.3).toFixed(2) + 'deg) translateY(' + (t.state.theta * 180).toFixed(1) + 'px)';
+    const rp = $('rollPtr');
+    if (rp) rp.style.transform = 'rotate(' + (t.state.phi * 57.3).toFixed(2) + 'deg)';
+    $('speedFill').style.height = (Math.min(1, ias / 280) * 100) + '%';
+    $('speedValue').textContent = Math.round(ias);
+    $('altFill').style.height = (Math.min(1, alt / 2500) * 100) + '%';
+    $('altValue').textContent = Math.round(alt);
+    const w = t.warnings || t.warn || {};
+    let msg = '';
+    if (w.crash) msg = 'CRASH';
+    else if (w.terrain) msg = 'TERRAIN';
+    else if (w.stall) msg = 'STALL';
+    else if (w.gearWarning || w.gearWarn) msg = 'GEAR';
+    const el = $('warningDisplay');
+    el.textContent = msg;
+    el.classList.toggle('show', !!msg);
+    $('telIas').textContent = Math.round(ias);
+    $('telAlt').textContent = Math.round(alt) + ' m';
+    $('telVs').textContent = vs.toFixed(1);
+    $('telAlpha').textContent = a.toFixed(1) + '°';
+    $('telPitch').textContent = (t.state.theta * 180 / Math.PI).toFixed(1) + '°';
+    $('telRoll').textContent = (t.state.phi * 180 / Math.PI).toFixed(1) + '°';
+    $('telCLCD').textContent = t.aero.CL.toFixed(2) + '/' + t.aero.CD.toFixed(3);
+    $('telAP').textContent = mode === 'auto' ? (t.ap.mode || 'on') : 'off';
+    if ($('telGust')) {
+      const g = t.gust || {};
+      $('telGust').textContent = (g.w || 0).toFixed(2);
+    }
+    if ($('telStab') && t.stab) $('telStab').textContent = t.stab.label;
+    $('apStatus').textContent = mode === 'auto' ? ('AP ' + (t.ap.mode || '').toUpperCase()) : '';
+  }
+
+  const padMap = { invY: false, invT: false };
+  $('padInvY').onclick = () => { padMap.invY = !padMap.invY; $('padInvY').classList.toggle('on', padMap.invY); };
+  $('padInvT').onclick = () => { padMap.invT = !padMap.invT; $('padInvT').classList.toggle('on', padMap.invT); };
+  let prevPadBtns = [];
+  function applyGamepad() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let gp = null;
+    for (let i = 0; i < pads.length; i++) if (pads[i] && pads[i].axes && pads[i].axes.length) { gp = pads[i]; break; }
+    if (!gp) { $('padInfo').textContent = 'Mando: no detectado. Conéctalo y pulsa un botón en la página.'; return false; }
+    $('padInfo').textContent = 'Mando: ' + (gp.id || 'gamepad').slice(0, 42);
+    const ax = gp.axes;
+    const dead = (v) => (Math.abs(v) < 0.08 ? 0 : v);
+    sl.aileron.value = dead(ax[0] || 0).toFixed(3);
+    let el = dead(ax[1] || 0);
+    sl.elevator.value = (padMap.invY ? el : -el).toFixed(3);
+    if (ax.length > 3) {
+      let thr = (ax[3] + 1) / 2;
+      if (padMap.invT) thr = 1 - thr;
+      sl.throttle.value = Math.max(0, Math.min(1, thr)).toFixed(3);
+    } else if (ax.length > 2) {
+      sl.rudder.value = dead(ax[2] || 0).toFixed(3);
+    }
+    if (ax.length > 2 && ax.length <= 3) sl.rudder.value = dead(ax[2] || 0).toFixed(3);
+    if (ax.length > 4) sl.rudder.value = dead(ax[2] || 0).toFixed(3);
+    const bt = gp.buttons || [];
+    const edge = (i) => bt[i] && bt[i].pressed && !prevPadBtns[i];
+    if (edge(0)) sl.flap.value = Math.min(1, +sl.flap.value + 0.15);
+    if (edge(1)) sl.flap.value = Math.max(0, +sl.flap.value - 0.15);
+    if (bt[2] && bt[2].pressed) sl.brake.value = 1;
+    else sl.brake.value = Math.max(0, +sl.brake.value - 0.05);
+    if (edge(3)) { ac.gearDown = !ac.gearDown; $('btnGear').textContent = ac.gearDown ? 'Tren ↓' : 'Tren ↑'; }
+    prevPadBtns = bt.map(b => !!(b && b.pressed));
+    fromSliders(); vals();
+    return true;
+  }
+  addEventListener('gamepadconnected', e => { $('padInfo').textContent = 'Mando: ' + e.gamepad.id; });
+  addEventListener('gamepaddisconnected', () => { $('padInfo').textContent = 'Mando: desconectado'; });
+  let last = performance.now();
+  // ---------- Visor MapLibre (OpenFreeMap Bright + relieve MDT IGN) ----------
+  // Panel aparte, con su propio contexto WebGL — no comparte nada con las
+  // escenas Three.js de cabina/exterior, así que no hay riesgo de conflicto
+  // entre motores de render. Requiere internet al abrir (estilo + teselas);
+  // el navegador puede cachear un rato, pero no hay paquete offline.
+  function mlEnsureMap() {
+    if (mlMap) return;
+    mlMap = new maplibregl.Map({
+      container: 'maplibreMap',
+      style: 'https://tiles.openfreemap.org/styles/bright',
+      center: [-3.7, 43], zoom: 6.3, attributionControl: true
+    });
+    mlMap.on('load', () => {
+      // El marcador se crea SIEMPRE primero — si el relieve/hillshade de IGN
+      // falla más abajo, el avión igualmente se ve y se mueve en el mapa.
+      const el = document.createElement('div');
+      el.style.cssText = 'width:14px;height:14px;border-radius:50% 50% 50% 0;background:#4fc3f7;border:2px solid #08101c;transform:rotate(-45deg);box-shadow:0 0 6px rgba(79,195,247,.9)';
+      mlMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' });
+      mlReady = true;
+      try {
+        mlMap.addSource('demIGN', {
+          type: 'raster-dem',
+          tiles: ['https://xyz-mdt.idee.es/1.0.0/raster-dem/{z}/{x}/{y}.png'],
+          tileSize: 256, encoding: 'mapbox',
+          attribution: '© Instituto Geográfico Nacional de España'
+        });
+        mlMap.setTerrain({ source: 'demIGN', exaggeration: 1.2 });
+        mlMap.addLayer({ id: 'hillshade', type: 'hillshade', source: 'demIGN', paint: { 'hillshade-exaggeration': 0.4 } });
+      } catch (e) {
+        console.error('Relieve 3D de IGN no disponible en el mapa (el mapa 2D y el avión siguen funcionando):', e);
+      }
+    });
+  }
+  function mlUpdateAircraft(t) {
+    if (!mlReady || !mlMarker) return;
+    const icao = RealTerrain.active;
+    if (!icao) return;
+    const pos = RealTerrain.simToReal(icao, t.state.x, t.state.z);
+    if (!pos) return;
+    if (!mlMarkerShown) { mlMarker.addTo(mlMap); mlMarkerShown = true; }
+    mlMarker.setLngLat([pos.lon, pos.lat]);
+    mlMarker.setRotation(t.state.psi * 57.29578);
+  }
+
+  function loop(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    const padOn = applyGamepad();
+    if (mode === 'manual' && !padOn) keysToSliders();
+    else if (mode === 'manual' && padOn) { /* el mando manda */ }
+    else syncSliders();
+    const t = ac.step(dt);
+    if (snd && snd.update) snd.update(t);
+    pushTrace(t);
+    placeExt(t);
+    placeCockpit(t);
+    hud(t);
+    yoke.rotation.z = ac.controls.aileron * 0.55;
+    yoke.rotation.x = -ac.controls.elevator * 0.4;
+    thrLever.rotation.x = (0.5 - ac.controls.throttle) * 0.7;
+    flapLever.rotation.x = (0.2 - ac.controls.flap) * 0.6;
+    pedL.position.z = -0.40 - ac.controls.rudder * 0.06;
+    pedR.position.z = -0.40 + ac.controls.rudder * 0.06;
+    mixLever.rotation.x = 0.3;
+    if (needles.IAS) needles.IAS.rotation.z = -(t.flight.iasKmh / 280) * 2.2;
+    if (needles.ALT) needles.ALT.rotation.z = -(t.state.y / 400) * 2.2;
+    if (needles.VSI) needles.VSI.rotation.z = -Math.max(-1, Math.min(1, t.flight.hdot / 8)) * 1.2;
+    if (needles.HDG) needles.HDG.rotation.z = -t.state.psi;
+    if (needles.ATT) needles.ATT.rotation.z = t.state.phi;
+    if (needles.RPM) needles.RPM.rotation.z = -(((t.prop && t.prop.rpm) || 0) / 2700) * 2;
+    if (needles.FUEL) needles.FUEL.rotation.z = -(((t.prop && t.prop.fuel) != null ? t.prop.fuel : 80) / 80) * 2 + 0.8;
+    const setN = (id, deg) => { const el = $(id); if (el) el.style.transform = 'rotate(' + deg + 'deg)'; };
+    setN('nIAS', (t.flight.iasKmh / 280) * 240 - 120);
+    setN('nALT', (t.state.y / 400) * 240 - 120);
+    setN('nVSI', Math.max(-90, Math.min(90, t.flight.hdot * 12)));
+    setN('nATT', t.state.phi * 57.3);
+    setN('nHDG', t.state.psi * 57.3);
+    setN('nTC', t.state.phi * 40);
+    const onlyExt = document.body.classList.contains('view-ext');
+    const onlyCock = document.body.classList.contains('view-cockpit');
+    if (!onlyExt) {
+      if (paniniOn && paniniScene) {
+        cR.setRenderTarget(paniniRT);
+        cR.render(cockpitScene, cockpitCam);
+        cR.setRenderTarget(null);
+        cR.render(paniniScene, paniniCam);
+      } else {
+        cR.render(cockpitScene, cockpitCam);
+      }
+    }
+    if (!onlyCock) eR.render(exteriorScene, extCam);
+    if (now - mlLastUpdate > 300) { mlLastUpdate = now; try { mlUpdateAircraft(t); } catch (e) { console.error('mlUpdateAircraft:', e); } }
+    requestAnimationFrame(loop);
+  }
+  try {
+    const p = JSON.parse(localStorage.getItem('avionPrefs') || 'null');
+    if (p) {
+      if (p.typeId) loadType(p.typeId);
+      if (p.fidelity) setFid(p.fidelity);
+      if (p.light) setLight(p.light);
+    }
+  } catch (e) {}
+  setMode();
+  syncSliders();
+  badge();
+  requestAnimationFrame(loop);
+  // El visor MapLibre se inicializa DESPUÉS y en su propio try/catch: si algo
+  // falla aquí (CDN lento, sin red, lo que sea), la app de vuelo ya está en
+  // marcha y no debe verse afectada en absoluto.
+  setTimeout(() => {
+    try {
+      if (typeof maplibregl === 'undefined') throw new Error('maplibre-gl no cargó desde el CDN');
+      mlEnsureMap();
+    } catch (e) {
+      console.error('Visor MapLibre no disponible:', e);
+      const el = document.getElementById('maplibreMap');
+      if (el) el.innerHTML = '<div style="color:#7a8aa8;font:11px ' + "'ui-monospace'" + ',Consolas,monospace;padding:8px">Mapa no disponible (revisa la conexión y recarga).</div>';
+    }
+  }, 0);
+})();
+</script>
+</body>
+</html>
