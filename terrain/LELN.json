@@ -1,0 +1,19 @@
+{
+  "icao": "LELN",
+  "name": "León",
+  "field_lat": 42.589,
+  "field_lon": -5.6556,
+  "field_elev_m": 916,
+  "bbox_lon_lat": [
+    -6.387693073364472,
+    42.050013295005385,
+    -4.923506926635527,
+    43.12798670499461
+  ],
+  "side_km": 120,
+  "meters_per_pixel": 117.1875,
+  "height_min_m": 348.1872863769531,
+  "height_max_m": 2364.791748046875,
+  "png_encoding": "RGBA 8-bit: value16 = R*256+G (0..65535); height = height_min_m + (value16/65535)*(height_max_m-height_min_m); B y A sin uso",
+  "png_size": 1024
+}

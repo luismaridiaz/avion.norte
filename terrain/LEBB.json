@@ -1,0 +1,19 @@
+{
+  "icao": "LEBB",
+  "name": "Bilbao (Sondica)",
+  "field_lat": 43.3011,
+  "field_lon": -2.9106,
+  "field_elev_m": 42,
+  "bbox_lon_lat": [
+    -3.4660581950971925,
+    42.89685997125404,
+    -2.3551418049028077,
+    43.70534002874596
+  ],
+  "side_km": 90,
+  "meters_per_pixel": 87.890625,
+  "height_min_m": -14.714396476745605,
+  "height_max_m": 1472.402099609375,
+  "png_encoding": "RGBA 8-bit: value16 = R*256+G (0..65535); height = height_min_m + (value16/65535)*(height_max_m-height_min_m); B y A sin uso",
+  "png_size": 1024
+}

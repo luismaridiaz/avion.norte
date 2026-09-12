@@ -1,0 +1,19 @@
+{
+  "icao": "LEST",
+  "name": "Santiago de Compostela",
+  "field_lat": 42.8963,
+  "field_lon": -8.4151,
+  "field_elev_m": 370,
+  "bbox_lon_lat": [
+    -8.966898090932244,
+    42.49205997125404,
+    -7.863301909067757,
+    43.30054002874596
+  ],
+  "side_km": 90,
+  "meters_per_pixel": 87.890625,
+  "height_min_m": -2.6313705444335938,
+  "height_max_m": 1175.642333984375,
+  "png_encoding": "RGBA 8-bit: value16 = R*256+G (0..65535); height = height_min_m + (value16/65535)*(height_max_m-height_min_m); B y A sin uso",
+  "png_size": 1024
+}

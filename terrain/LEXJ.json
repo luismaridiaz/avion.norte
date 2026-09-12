@@ -1,0 +1,19 @@
+{
+  "icao": "LEXJ",
+  "name": "Santander (Seve Ballesteros)",
+  "field_lat": 43.4269,
+  "field_lon": -3.82,
+  "field_elev_m": 5,
+  "bbox_lon_lat": [
+    -4.376611237475293,
+    43.02265997125404,
+    -3.2633887625247064,
+    43.83114002874596
+  ],
+  "side_km": 90,
+  "meters_per_pixel": 87.890625,
+  "height_min_m": -18.302898406982422,
+  "height_max_m": 2072.76708984375,
+  "png_encoding": "RGBA 8-bit: value16 = R*256+G (0..65535); height = height_min_m + (value16/65535)*(height_max_m-height_min_m); B y A sin uso",
+  "png_size": 1024
+}

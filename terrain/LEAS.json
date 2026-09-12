@@ -1,0 +1,19 @@
+{
+  "icao": "LEAS",
+  "name": "Asturias (Ranón)",
+  "field_lat": 43.5636,
+  "field_lon": -6.0347,
+  "field_elev_m": 127,
+  "bbox_lon_lat": [
+    -6.592572680929313,
+    43.15935997125404,
+    -5.476827319070687,
+    43.96784002874596
+  ],
+  "side_km": 90,
+  "meters_per_pixel": 87.890625,
+  "height_min_m": -9.183926582336426,
+  "height_max_m": 1741.73828125,
+  "png_encoding": "RGBA 8-bit: value16 = R*256+G (0..65535); height = height_min_m + (value16/65535)*(height_max_m-height_min_m); B y A sin uso",
+  "png_size": 1024
+}
